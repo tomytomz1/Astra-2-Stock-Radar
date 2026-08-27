@@ -7,6 +7,7 @@
   "scripts": {
     "typecheck": "pnpm -r --no-bail typecheck",
     "test": "pnpm --filter @astra/worker test",
+    "bootstrap": "tsx scripts/bootstrap.ts",
     "probe": "tsx scripts/probe.ts",
     "simulate-restock": "tsx scripts/simulate-restock.ts",
     "deploy:worker": "pnpm --filter @astra/worker deploy"

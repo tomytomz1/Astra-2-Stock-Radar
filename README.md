@@ -35,9 +35,12 @@ are supposed to work here.
 Detection is a chain of four strategies, tried in order, first success wins (see
 `packages/contract/src/index.ts` → `ADAPTER_ORDER`): `shopify-js` (`{url}.js`), `shopify-json`
 (`{url}.json`), `jsonld` (`<script type="application/ld+json">`), `heuristic` (regex over the
-raw page). Which one actually works against the live store is unknown until you run the probe
-(see checklist step 5) — that's deliberate, since this environment cannot reach the store to
-find out for you.
+raw page). `worker/src/detect/index.ts` runs the whole chain on every pass and uses the first
+adapter that succeeds, and the shipped `worker/src/detect/config.json` ships with no preferred
+adapter set — so a freshly deployed Worker already self-resolves detection with zero
+configuration. `pnpm probe` (optional — see Troubleshooting) pins down which adapter actually
+wins against the live store, which only saves the Worker up to three wasted fetches per minute;
+it is not required to get a working deploy.
 
 ## Why it will not cry wolf
 
@@ -58,38 +61,67 @@ buying window that can already be shorter than that.
 
 Run these in order. Assumes an approved Apple Developer account and nothing else configured.
 
+**Steps 2 and 3 run in parallel, not in sequence.** The app build is a 10–20 minute remote EAS
+queue; the Cloudflare half is about 2–5 minutes end to end. Kick off step 2, then — without
+waiting for it to finish — do step 3 in the same terminal (or another one) while it builds.
+Doing them back to back costs the sum of both waits; doing them in parallel costs only the
+longer one.
+
 | # | Step | Command | Time |
 |---|------|---------|------|
 | 1 | Install dependencies | `pnpm install` | ~1 min |
-| 2 | Authenticate wrangler | `npx wrangler login` (opens a browser) | ~1 min |
-| 3 | Create the KV namespace, then paste the id in | `npx wrangler kv namespace create STOCK_KV` | ~1 min |
-| 4 | Add secrets (see below) | none strictly required | — |
-| 5 | Fingerprint the live store | `pnpm probe` | ~1 min |
-| 6 | Deploy the Worker | `pnpm deploy:worker` | ~1 min |
-| 7 | Point the app at the Worker | edit `app/eas.json` | ~1 min |
-| 8 | Build the app | `npx eas login` then `eas build --profile preview --platform all` | 10–20 min (remote build queue — you wait on EAS) |
-| 9 | Ship to devices | `eas submit -p ios`; sideload the Android APK | ~5 min iOS submit + TestFlight processing (10–30 min); APK install is immediate |
-| 10 | Grant permission, pick variants | in-app | ~1 min |
-| 11 | Prove the pipeline end to end | `pnpm simulate-restock <variantId>` | ~1–2 min (waits for the next cron tick) |
+| 2 | Start the app build — do this first, then move straight to step 3 while it queues | `npx eas login` then `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
+| 3 | Provision Cloudflare and deploy the Worker — do this while step 2 builds | `pnpm bootstrap` | ~2–5 min |
+| 4 | Add secrets (optional, see below) | none strictly required | — |
+| 5 | Ship to devices | `eas submit -p ios`; sideload the Android APK | ~5 min iOS submit + TestFlight processing (10–30 min); APK install is immediate |
+| 6 | Grant permission, pick variants | in-app | ~1 min |
+| 7 | Prove the pipeline end to end | `pnpm simulate-restock <variantId>` | ~1–2 min (waits for the next cron tick) |
 
-### Step 3 detail — KV namespace
+### Step 2 detail — build
 
 ```
-npx wrangler kv namespace create STOCK_KV
+npx eas login
+eas build --profile preview --platform all
 ```
 
-This prints an `id` (and, if you pass `--preview`, a separate `preview_id`). Paste them into
-`worker/wrangler.toml`:
+`preview` is the real profile name in `app/eas.json` (not `production`). It produces an
+installable Android **APK** (`android.buildType: "apk"`) and an iOS build set for **store**
+distribution (`ios.distribution: "store"`), i.e. suitable for TestFlight. This step queues a
+remote build on EAS's infrastructure — expect 10–20 minutes per platform. `eas build` gives you
+a link to watch progress; you don't need to wait on it before starting step 3.
 
-```toml
-[[kv_namespaces]]
-binding = "STOCK_KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"          # <- paste the returned id here
-preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"  # <- paste here if you created a preview namespace
+### Step 3 detail — `pnpm bootstrap`
+
+```
+pnpm bootstrap             # do it for real
+pnpm bootstrap --dry-run   # print the plan, create/deploy/write nothing
 ```
 
-Wrangler refuses to deploy while either field is still a `REPLACE_WITH_...` placeholder, so a
-forgotten paste fails loudly at deploy time, not silently at runtime.
+*(Named `bootstrap` rather than `setup` on purpose: `pnpm setup` is pnpm's own built-in command
+that writes `PNPM_HOME` into your shell profile, so a script called `setup` would sit behind a
+name that silently does something else to your machine.)*
+
+This is `scripts/bootstrap.ts`, and it collapses what used to be five separate commands plus two
+manual copy-paste-into-file edits into one. In order, it:
+
+1. Checks you're logged in to wrangler (`wrangler whoami`). If not, it prints the exact
+   `npx wrangler login` command and stops — it never attempts to log you in itself.
+2. Lists your existing KV namespaces and reuses one already titled for this project, or creates
+   a production + preview namespace if neither exists yet.
+3. Patches the `id` / `preview_id` placeholders in `worker/wrangler.toml` with the real ids —
+   surgically, leaving every comment in the file untouched. If a real id is already configured,
+   it reports that and leaves it alone rather than overwriting it.
+4. Deploys the Worker (`wrangler deploy`) and parses the printed `*.workers.dev` URL from the
+   output.
+5. Writes that URL into `app/eas.json`'s `build.preview.env.EXPO_PUBLIC_WORKER_URL` — the exact
+   manual paste that used to be the easiest step to get wrong, and the one most likely to fail
+   silently (a stale or mistyped URL means the app registers nowhere, and you only find out
+   during a drop).
+6. Prints a summary: which files changed, the deployed Worker URL, and the next command to run.
+
+If wrangler ever prints a namespace-create or deploy response the script can't parse, it says so
+explicitly and tells you where to find the value yourself (the Cloudflare dashboard, or
+`wrangler kv namespace list`) rather than writing something guessed.
 
 ### Step 4 detail — secrets
 
@@ -107,72 +139,7 @@ tokens. If unset, the Worker sends unauthenticated Expo push requests (Expo's de
 no `ADMIN_TOKEN` or similar gating `/register` — anyone with the Worker URL can register a
 token today; that's an accepted gap, not a missing step.
 
-### Step 5 detail — the probe
-
-```
-pnpm probe
-```
-
-This is the **only** step that touches the live store. It fetches `PRODUCT_URL`, runs all four
-detection adapters, prints a per-adapter OK/FAILED report with parsed variants, and writes
-`worker/src/detect/config.json` (the `DetectConfig` the Worker reads at runtime — no code change
-needed). Read the printed report:
-
-- If one adapter succeeded, it's now `preferredAdapter` in the config — you're done, go to step 6.
-- If only `heuristic` could work (or none did), open `worker/src/detect/config.json` and hand-tune
-  `soldOutPatterns` / `inStockPatterns` using the "candidate stock-related phrases" the probe
-  prints, then re-run `pnpm probe` until an adapter reports OK. Do not deploy with every adapter
-  failing — the cron pass will never detect a restock.
-- `pnpm probe <url>` overrides the target (e.g. to test against a different store).
-
-### Step 6 detail — deploy and find the Worker URL
-
-```
-pnpm deploy:worker
-```
-
-Wrangler prints the deployed URL on success, in the form:
-
-```
-https://astra-2-stock-radar.<your-subdomain>.workers.dev
-```
-
-(the worker name `astra-2-stock-radar` comes from `worker/wrangler.toml`'s `name` field). Copy
-that URL — you need it in step 7.
-
-### Step 7 detail — point the app at the Worker
-
-`app/app.config.ts` reads the Worker URL from the `EXPO_PUBLIC_WORKER_URL` env var at build
-time. The `preview` build profile in `app/eas.json` already has a placeholder for it — replace
-it directly:
-
-```json
-"preview": {
-  "distribution": "internal",
-  "android": { "buildType": "apk" },
-  "ios": { "distribution": "store" },
-  "env": {
-    "EXPO_PUBLIC_WORKER_URL": "https://astra-2-stock-radar.<your-subdomain>.workers.dev"
-  }
-}
-```
-
-This is a public URL, not a secret — committing it is fine.
-
-### Step 8 detail — build
-
-```
-npx eas login
-eas build --profile preview --platform all
-```
-
-`preview` is the real profile name in `app/eas.json` (not `production`). It produces an
-installable Android **APK** (`android.buildType: "apk"`) and an iOS build set for **store**
-distribution (`ios.distribution: "store"`), i.e. suitable for TestFlight. This step queues a
-remote build on EAS's infrastructure — expect 10–20 minutes per platform, and you can close the
-terminal; `eas build` gives you a link to watch progress.
-
-### Step 9 detail — ship to devices
+### Step 5 detail — ship to devices
 
 ```
 eas submit -p ios
@@ -180,9 +147,9 @@ eas submit -p ios
 
 Uses the `submit.preview` profile in `app/eas.json`. After Apple finishes processing (typically
 10–30 min), install via TestFlight on the iOS device. For Android, download the APK EAS built in
-step 8 and sideload it directly (enable "install unknown apps" for your file manager/browser).
+step 2 and sideload it directly (enable "install unknown apps" for your file manager/browser).
 
-### Steps 10–11 — verify
+### Steps 6–7 — verify
 
 1. Open the app, grant the notification permission when prompted, and select the variant(s) you
    care about (or leave the selection empty to mean "all variants").
@@ -198,20 +165,36 @@ This does **not** fake availability — it only resets one variant's alert latch
 `{available: false, lastAlertedAt: null}`. The Worker's next real cron tick (within ~60s) still
 fetches the real store; a push only fires if that variant is genuinely purchasable right now. So
 pick a variant that's actually in stock (any variant will do — it doesn't have to be the specific
-configuration you're waiting for; run `pnpm probe` first if you're unsure which one that is).
-The script prints the exact `wrangler kv key put`/`delete` command to undo itself. Watch your
-device for the notification, or poll `GET /status` on the deployed Worker.
+configuration you're waiting for; `pnpm probe` can show you live variant availability if you're
+unsure which one that is — see Troubleshooting). The script prints the exact
+`wrangler kv key put`/`delete` command to undo itself. Watch your device for the notification, or
+poll `GET /status` on the deployed Worker.
+
+## Known limitation: the registration gap
+
+Between step 3 (the Worker goes live) and step 6 (the app is installed and has registered a push
+token), the token registry is empty. If the real product restocks in that window, the Worker
+still detects it and still tries to notify — it just has no devices to send to. No error, no
+retry, nothing recorded to say a push was owed and never sent.
+
+Starting the build first (step 2) shrinks this window, since most of the wait now happens before
+the Worker exists at all rather than after it's already watching. It does not eliminate the gap:
+the Worker has to be live for `pnpm bootstrap` to finish, and the app can't register a token
+before it's installed. This is deliberately not covered by a second delivery channel (e.g. an
+email fallback while devices are still registering) — see "Deliberately not built" below.
 
 ## Troubleshooting
 
 | Symptom | Check, in order |
 |---|---|
-| No notification ever arrives | 1. Did the app register? (check `POST /register` succeeded, no error toast) 2. Is the Worker actually deployed? (`pnpm deploy:worker` again, or check the Cloudflare dashboard) 3. Is the cron firing? (Cloudflare dashboard → Worker → Triggers → recent cron invocations) 4. `curl https://<worker-url>/status` — does `lastSuccessAt` update roughly every minute? |
-| `GET /status` shows `consecutiveFailures > 0` | The detector is broken, most likely because the store changed its markup. Re-run `pnpm probe` to see which adapter(s) now fail and why. If you can't fix the adapter/pattern yourself, `.claude/agents/watcher.md` defines an agent scoped to `worker/**` (detection adapters, KV state, dispatch) — ask it to fix the detector. |
+| No notification ever arrives | 1. Did the app register? (check `POST /register` succeeded, no error toast) 2. Is the Worker actually deployed? (`pnpm bootstrap` again, or check the Cloudflare dashboard) 3. Is the cron firing? (Cloudflare dashboard → Worker → Triggers → recent cron invocations) 4. `curl https://<worker-url>/status` — does `lastSuccessAt` update roughly every minute? 5. Did the restock happen in the registration gap between deploy and install? (see "Known limitation" above) |
+| `GET /status` shows `consecutiveFailures > 0` | The detector is broken, most likely because the store changed its markup. Run `pnpm probe` to see which adapter(s) fail and why — see the next row. If you can't fix the adapter/pattern yourself, `.claude/agents/watcher.md` defines an agent scoped to `worker/**` (detection adapters, KV state, dispatch) — ask it to fix the detector. |
+| Want to speed up detection, or diagnose why every adapter is failing | Run `pnpm probe`. It is **not** a required setup step — the Worker already tries the full adapter chain on every pass and uses the first one that succeeds, so a default deploy self-resolves detection with no configuration. What `pnpm probe` gets you: it fetches `PRODUCT_URL`, runs all four detection adapters, prints a per-adapter OK/FAILED report with parsed variants, and writes `worker/src/detect/config.json` pinning the winning adapter as `preferredAdapter` — saving the Worker up to three wasted fetches per cron pass, and giving you live variant ids for `pnpm simulate-restock`. If it reports every adapter failing, open `worker/src/detect/config.json` and hand-tune `soldOutPatterns` / `inStockPatterns` using the "candidate stock-related phrases" the probe prints, then re-run it until one adapter reports OK — a Worker deployed with every adapter broken will never detect a restock. `pnpm probe <url>` overrides the target (e.g. to test against a different store). |
 | Probe hits a Cloudflare/bot-challenge page | `pnpm probe` prints a specific warning when the response body looks like a challenge page (`cf-chl`, "checking your browser", captcha, etc). A plain server fetch can't pass a JS challenge — open the URL in a real browser and check whether it's only shown to new/unusual IPs. If every visitor gets it, none of the four adapters (nor the Worker built on them) can watch this store as-is. |
 | TestFlight build expired | TestFlight internal builds expire ~90 days after upload. Re-run `eas build --profile preview --platform ios` then `eas submit -p ios`. |
 | Push never lands / Expo reports `DeviceNotRegistered` | The Worker already prunes dead tokens from its registry on `DeviceNotRegistered` receipts — if yours got pruned, just re-open the app so it re-registers a fresh token (uninstall/reinstall or a token refresh both trigger this). |
-| Testing on a simulator/emulator and nothing arrives | Expected — push tokens do not work on iOS Simulator or most Android emulator images. Use a real device for steps 10–11. |
+| Testing on a simulator/emulator and nothing arrives | Expected — push tokens do not work on iOS Simulator or most Android emulator images. Use a real device for steps 6–7. |
+| `pnpm bootstrap` fails at the wrangler-auth check | You're not logged in (or the network can't reach Cloudflare) — the printed message tells you which command to run (`npx wrangler login`) and to re-run `pnpm bootstrap` after. It never attempts to log you in itself. |
 
 ## Development
 
@@ -227,10 +210,16 @@ a real minute to tick: with `wrangler dev` running, hit `http://localhost:8787/_
 your local dev environment.
 
 CI (`.github/workflows/ci.yml`) runs typecheck and tests only on every push/PR — no deploy step,
-no credentials. All real deploys (`pnpm deploy:worker`, `eas build`/`eas submit`) run from a
+no credentials. All real deploys (`pnpm bootstrap`, `eas build`/`eas submit`) run from a
 developer machine, following this checklist.
 
 ## Deliberately not built
 
 Auto-add-to-cart: it would close the gap between alert and sellout, but it's very likely against
 the store's Terms of Service, so it was flagged rather than built.
+
+A second delivery channel (e.g. email) to cover the registration gap between deploying the
+Worker and installing the app (see "Known limitation" above): it would only ever matter for a
+restock that lands in a several-minute window on first-ever setup, and adding a second channel
+means a second set of credentials and a second thing that can silently break. Re-running
+`pnpm simulate-restock` after setup is the mitigation, not a standing second channel.

@@ -1,6 +1,6 @@
 /**
- * Minimal ambient declarations for the handful of Node built-ins `probe.ts` and
- * `simulate-restock.ts` touch.
+ * Minimal ambient declarations for the handful of Node built-ins `probe.ts`,
+ * `simulate-restock.ts`, and `setup.ts` touch.
  *
  * Hand-written instead of depending on `@types/node` because that would mean adding it to the
  * root `package.json` -- out of scope for the ops agent (see `.claude/agents/ops.md`), and this
@@ -10,7 +10,7 @@
  * (non-hoisted) linking would not make it resolvable from here anyway. This file is the actually
  * portable fix, not a sandbox workaround.
  *
- * Deliberately narrow: only what these two scripts call. `tsx`'s runtime resolution of `node:*`
+ * Deliberately narrow: only what these scripts call. `tsx`'s runtime resolution of `node:*`
  * specifiers is unaffected by any of this -- it only exists to make `tsc --noEmit` pass.
  */
 
@@ -38,6 +38,6 @@ declare module 'node:child_process' {
   export function execFileSync(
     command: string,
     args: string[],
-    options: { encoding: 'utf8'; stdio?: Array<'pipe' | 'ignore' | 'inherit'> },
+    options: { encoding: 'utf8'; stdio?: Array<'pipe' | 'ignore' | 'inherit'>; timeout?: number },
   ): string;
 }
