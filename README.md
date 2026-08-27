@@ -199,10 +199,36 @@ email fallback while devices are still registering) — see "Deliberately not bu
 ## Development
 
 ```
+pnpm preflight                                    # run this before every push — see below
 pnpm typecheck                                   # all workspace packages + scripts/
 pnpm test                                         # worker unit tests (vitest, mocked fetch, no network)
 pnpm --filter @astra/worker exec wrangler dev --test-scheduled
 ```
+
+### `pnpm preflight` — the pre-push gate
+
+Runs the exact command sequence CI runs, plus structural checks that typecheck and tests cannot
+express. It exists because every defect that has reached this repo's remote was found by
+*running* something, not by reading it:
+
+| Check | The bug it prevents |
+|---|---|
+| No contract value hardcoded outside the contract | The Worker sent Android `channelId: 'restock'` while the app created `'restock-alerts'`; Android silently downgrades importance and sound on a mismatch, so the one alert this project exists to deliver could have arrived with no sound |
+| No script name shadowed by a pnpm builtin | A script named `setup` is unreachable via `pnpm setup`, which runs pnpm's own command and writes `PNPM_HOME` into your shell profile |
+| Every `pnpm` command in this README exists | Documentation drifting past the code |
+| Preflight covers every command CI runs | A local gate that checks less than CI produces confidence CI then contradicts |
+| No secrets or real infrastructure ids committed | Credential leaks |
+
+The gate is itself regression-tested: each of the above was re-introduced deliberately and
+confirmed to fail the check before this was committed.
+
+`--structural-only` skips the build and test steps (CI uses this, since it runs those as
+separate named steps for per-step failure attribution). `--verbose` shows detail for passing
+checks too.
+
+For the judgment-level checks a script cannot make — a shared value that *should* be in the
+contract but isn't yet, a README claim that no longer matches the code — see
+`.claude/agents/verifier.md`.
 
 The last command runs the Worker locally and lets you trigger the cron path without waiting for
 a real minute to tick: with `wrangler dev` running, hit `http://localhost:8787/__scheduled` (add

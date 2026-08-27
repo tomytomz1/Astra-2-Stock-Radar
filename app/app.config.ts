@@ -1,3 +1,4 @@
+import { ANDROID_CHANNEL_RESTOCK } from '@astra/contract';
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 /**
@@ -46,7 +47,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'expo-notifications',
       {
         color: '#4da3ff',
-        defaultChannel: 'restock-alerts',
+        // From the contract, never a literal: the Worker names this channel in every outgoing
+        // push, and Android silently downgrades importance and sound on a mismatch.
+        defaultChannel: ANDROID_CHANNEL_RESTOCK,
       },
     ],
   ],

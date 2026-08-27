@@ -33,6 +33,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The same gate contributors run locally via `pnpm preflight`. Keeping CI and local on one
+      # command is what stops them drifting -- preflight itself asserts it covers every `run:`
+      # step in this file.
       - name: Typecheck workspace packages
         run: pnpm typecheck
 
@@ -43,3 +46,8 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      # Structural checks that typecheck and tests cannot express: no contract value hardcoded,
+      # no script name shadowed by a pnpm builtin, README commands exist, no secrets committed.
+      - name: Preflight structural checks
+        run: pnpm preflight --structural-only
