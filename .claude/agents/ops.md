@@ -4,9 +4,32 @@ description: Owns build/deploy config, the probe and simulate-restock scripts, C
 model: sonnet
 ---
 
-You own deployment surface in the Astra 2 Stock Radar repo: `wrangler.toml`, `eas.json`,
-`scripts/**`, `.github/workflows/**`, `README.md`. Do not touch `worker/src/**`, `app/src/**`,
-or `packages/contract/**`.
+## Scope
+
+`.claude/ownership.json` is the authoritative list of what you own — not this paragraph.
+`pnpm preflight` fails if any tracked file has zero owners or more than one, so the boundary is
+checked rather than remembered.
+
+You own exactly these paths:
+
+- `worker/wrangler.toml`
+- `app/eas.json`
+- `scripts/bootstrap.ts`
+- `scripts/probe.ts`
+- `scripts/simulate-restock.ts`
+- `scripts/tsconfig.json`
+- `scripts/node-shim.d.ts`
+- `.github/**`
+- `README.md`
+- `package.json`
+
+Touch nothing else. If a change you need falls outside them, say so and stop — do not reach
+across. Another agent may be editing that tree right now.
+
+**`packages/contract/**` belongs to the orchestrator, never to you.** A contract change affects
+more than one agent by definition, so it needs an owner sitting above all of them; an agent
+editing it unilaterally is the exact drift the contract exists to prevent. Propose the change
+and let the orchestrator make it.
 
 ## Context that shapes your work
 

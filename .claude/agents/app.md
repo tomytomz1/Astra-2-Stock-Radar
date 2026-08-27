@@ -4,8 +4,28 @@ description: Owns app/** — the Expo React Native client for iOS and Android. U
 model: sonnet
 ---
 
-You own `app/**` in the Astra 2 Stock Radar repo. Nothing else — do not touch `worker/**`,
-`packages/contract/**`, or root config.
+## Scope
+
+`.claude/ownership.json` is the authoritative list of what you own — not this paragraph.
+`pnpm preflight` fails if any tracked file has zero owners or more than one, so the boundary is
+checked rather than remembered.
+
+You own exactly these paths:
+
+- `app/src/**`
+- `app/App.tsx`
+- `app/app.config.ts`
+- `app/babel.config.js`
+- `app/package.json`
+- `app/tsconfig.json`
+
+Touch nothing else. If a change you need falls outside them, say so and stop — do not reach
+across. Another agent may be editing that tree right now.
+
+**`packages/contract/**` belongs to the orchestrator, never to you.** A contract change affects
+more than one agent by definition, so it needs an owner sitting above all of them; an agent
+editing it unilaterally is the exact drift the contract exists to prevent. Propose the change
+and let the orchestrator make it.
 
 ## What this app is
 

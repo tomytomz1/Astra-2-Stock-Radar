@@ -238,6 +238,68 @@ function checkCiParity(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 9: agent ownership must be unambiguous
+// ---------------------------------------------------------------------------
+
+/**
+ * Every tracked file must have exactly one owning agent. Zero owners means concurrent agents
+ * can both decide a file is theirs; two owners means they already can.
+ *
+ * This is not hypothetical. The prose version of these boundaries claimed `wrangler.toml` for
+ * ops while `watcher` had been told it owned `worker/**` exclusively -- and the same for
+ * `eas.json` inside `app/**`. Three agents ran against that overlap concurrently and only
+ * avoided clobbering each other by luck.
+ *
+ * More specific globs win, so a directory owner can carve out one file for another agent.
+ */
+function checkOwnershipIsUnambiguous(): void {
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude/ownership.json'), 'utf8')) as {
+    owners: Record<string, { owns: string[] }>;
+  };
+
+  /** Glob -> RegExp. Supports `**` (any depth) and `*` (one segment). */
+  function toRegExp(glob: string): RegExp {
+    const escaped = glob
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*\//g, '\u0000')
+      .replace(/\*\*/g, '\u0001')
+      .replace(/\*/g, '[^/]*')
+      .replace(/\u0000/g, '(?:.*/)?')
+      .replace(/\u0001/g, '.*');
+    return new RegExp(`^${escaped}$`);
+  }
+
+  const rules: Array<{ agent: string; glob: string; re: RegExp; specificity: number }> = [];
+  for (const [agent, spec] of Object.entries(manifest.owners)) {
+    for (const glob of spec.owns) {
+      rules.push({ agent, glob, re: toRegExp(glob), specificity: glob.includes('*') ? 0 : 1 });
+    }
+  }
+
+  const tracked = run('git', ['ls-files']).output.split('\n').filter((f) => f.trim() !== '');
+
+  const unowned: string[] = [];
+  const contested: string[] = [];
+  for (const file of tracked) {
+    const matches = rules.filter((r) => r.re.test(file));
+    if (matches.length === 0) {
+      unowned.push(`${file} has no owner in .claude/ownership.json`);
+      continue;
+    }
+    // An exact-path rule beats a glob; that is the intended carve-out mechanism.
+    const exact = matches.filter((r) => r.specificity === 1);
+    const winners = exact.length > 0 ? exact : matches;
+    if (winners.length > 1) {
+      const who = winners.map((w) => `${w.agent} (${w.glob})`).join(' and ');
+      contested.push(`${file} is claimed by ${who}`);
+    }
+  }
+
+  const problems = [...contested, ...unowned];
+  record('every tracked file has exactly one owning agent', problems.length === 0, problems.slice(0, 20));
+}
+
+// ---------------------------------------------------------------------------
 // 9: nothing secret, and no unresolved placeholder in a value that must be real
 // ---------------------------------------------------------------------------
 
@@ -286,6 +348,7 @@ function main(): void {
   checkNoShadowedScriptNames();
   checkDocumentedCommandsExist();
   checkCiParity();
+  checkOwnershipIsUnambiguous();
   checkNoSecrets();
 
   const failed = results.filter((r) => !r.ok);

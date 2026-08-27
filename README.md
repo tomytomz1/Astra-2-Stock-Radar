@@ -230,6 +230,21 @@ For the judgment-level checks a script cannot make — a shared value that *shou
 contract but isn't yet, a README claim that no longer matches the code — see
 `.claude/agents/verifier.md`.
 
+### Who owns what
+
+This repo was built by several agents working in parallel, and `.claude/ownership.json` records
+which one owns which paths. Preflight fails if any tracked file has zero owners or more than
+one, so the boundaries are checked rather than remembered — the prose version had already
+collided twice, claiming `worker/wrangler.toml` and `app/eas.json` for two owners each.
+
+Two boundaries are deliberate and worth knowing:
+
+- **`packages/contract/**` belongs to no agent.** A contract change affects the Worker and the
+  app by definition, so it needs an owner above both. One agent editing it alone is the drift
+  the contract exists to prevent.
+- **`ops` owns the deployment code; `verifier` owns the gate that checks it.** The agent that
+  causes a failing check must not be the one able to silence it.
+
 The last command runs the Worker locally and lets you trigger the cron path without waiting for
 a real minute to tick: with `wrangler dev` running, hit `http://localhost:8787/__scheduled` (add
 `?cron=*+*+*+*+*` if wrangler asks you to disambiguate) to fire one `scheduled()` pass against
