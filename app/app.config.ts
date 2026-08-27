@@ -40,6 +40,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     ...config.extra,
     workerUrl,
+    eas: {
+      ...config.extra?.eas,
+      /**
+       * `getExpoPushTokenAsync` needs this, and `src/notifications.ts` reads it from exactly
+       * here. `eas init` writes it into `app.json` for a static config, but this project uses a
+       * dynamic config (`app.config.ts`), which the EAS CLI cannot edit — it prints the id and
+       * expects you to wire it yourself. Both routes are honoured: the spread above picks up an
+       * `app.json` if `eas init` creates one, and `EAS_PROJECT_ID` works when it doesn't.
+       *
+       * Left undefined, push registration fails with an unhelpful error rather than crashing —
+       * `notifications.ts` only passes the option when it is set.
+       */
+      projectId: process.env.EAS_PROJECT_ID ?? config.extra?.eas?.projectId,
+    },
   },
   plugins: [
     ...(config.plugins ?? []),

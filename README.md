@@ -57,6 +57,40 @@ The alert fires on the **first** observed in-stock reading — there is no secon
 That's deliberate, not an oversight: a confirmation pass would add another ~60s cron tick to a
 buying window that can already be shorter than that.
 
+## Fastest path — iOS via Expo Go, no Apple credentials
+
+If you have an iPhone and just want alerts working today, you can skip the build entirely.
+Expo Go runs the app from a QR code with no compilation, no Apple Developer account, and no
+TestFlight.
+
+**iOS only.** In `expo-notifications` (SDK 53+), `getDevicePushTokenAsync` *throws* under Expo Go
+on Android — remote push was removed from Expo Go there. On iOS it only logs a warning and still
+returns a token, so push works. Android needs a real development build.
+
+```
+npx expo login                 # free Expo account — Apple is not involved
+npx eas init                   # prints your projectId
+export EAS_PROJECT_ID=<the id it printed>
+npx wrangler login
+pnpm bootstrap                 # Worker live and polling
+export EXPO_PUBLIC_WORKER_URL=<the worker URL bootstrap printed>
+npx expo start                 # scan the QR code with Expo Go
+```
+
+Then grant notification permission in the app, pick your variants, and run
+`pnpm simulate-restock` to prove a push actually lands.
+
+`eas init` cannot write `projectId` into this project's config automatically — `app.config.ts`
+is a dynamic config, which the EAS CLI reads but never edits. `EAS_PROJECT_ID` is the wiring for
+that; if you later add an `app.json`, its `extra.eas.projectId` is picked up too.
+
+**What this costs you:** the notification itself is delivered by APNs to Expo Go, so the banner,
+sound, and the variant and price in the body all arrive whether or not your dev server is still
+running. Only *tapping* it needs the server, since Expo Go reloads the JS bundle on open. For a
+stock alert — where the actionable information is in the banner and you are going to open the
+store yourself anyway — that is a cosmetic limitation. Do the full build below when you want
+permanence or Android.
+
 ## Setup checklist
 
 Run these in order. Assumes an approved Apple Developer account and nothing else configured.
