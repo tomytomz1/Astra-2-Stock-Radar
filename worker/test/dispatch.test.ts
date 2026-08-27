@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ANDROID_CHANNEL_RESTOCK,
   EXPO_PUSH_BATCH_SIZE,
   EXPO_PUSH_RECEIPT_URL,
   EXPO_PUSH_SEND_URL,
@@ -44,7 +45,10 @@ describe('message content', () => {
     expect(message?.data).toEqual({ kind: 'restock', variantId: 'silver-16-512', url: PRODUCT_URL });
     expect(message?.priority).toBe('high');
     expect(message?.sound).toBe('default');
-    expect(message?.channelId).toBe('restock');
+    // The channel id must be the contract's, not a worker-local literal: the app creates the
+    // channel under this exact name and Android silently downgrades a mismatch.
+    expect(message?.channelId).toBe(ANDROID_CHANNEL_RESTOCK);
+    expect(message?.channelId).toBe('restock-alerts');
   });
 
   it('drops the price from the body when the store does not expose one', () => {

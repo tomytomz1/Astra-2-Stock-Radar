@@ -3,6 +3,7 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
+import { ANDROID_CHANNEL_DETECTOR, ANDROID_CHANNEL_RESTOCK } from '@astra/contract';
 import type { RestockPushData } from '@astra/contract';
 
 /**
@@ -18,17 +19,29 @@ Notifications.setNotificationHandler({
   }),
 });
 
-const ANDROID_CHANNEL_ID = 'restock-alerts';
-
-/** Must exist before a notification can be shown on Android 8+. Safe to call repeatedly. */
+/**
+ * Channel ids come from the contract, not from a local literal. The worker names the channel
+ * in the outgoing push, and if the two sides disagree Android does not error — it quietly
+ * delivers on a fallback channel and drops the importance and sound configured below.
+ */
 export async function ensureAndroidChannelAsync(): Promise<void> {
   if (Platform.OS !== 'android') return;
-  await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
+  await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_RESTOCK, {
     name: 'Restock alerts',
+    description: 'The tablet just became purchasable. Time-critical.',
     importance: Notifications.AndroidImportance.MAX,
     sound: 'default',
     vibrationPattern: [0, 250, 250, 250],
     lightColor: '#4da3ff',
+  });
+  // Separate channel so the plumbing can be muted without muting the thing you actually
+  // care about. Lower importance: knowing the watcher broke is useful, not urgent.
+  await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_DETECTOR, {
+    name: 'Watcher health',
+    description: 'The watcher lost sight of the store, so silence no longer means "sold out".',
+    importance: Notifications.AndroidImportance.DEFAULT,
+    sound: 'default',
+    lightColor: '#f0b429',
   });
 }
 

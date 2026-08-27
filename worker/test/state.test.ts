@@ -119,7 +119,7 @@ describe('applySnapshots — the latch', () => {
 describe('health state', () => {
   it('writes on the first success then stays silent while nothing changes', async () => {
     const kv = new FakeKV();
-    expect(await recordSuccess(kv, 'shopify-js', NOW)).toBe(true);
+    expect((await recordSuccess(kv, 'shopify-js', NOW)).wrote).toBe(true);
     kv.resetCounters();
 
     for (let pass = 1; pass * 60_000 < HEALTH_REFRESH_MS; pass += 1) {
@@ -132,7 +132,7 @@ describe('health state', () => {
     const kv = new FakeKV();
     await recordSuccess(kv, 'shopify-js', NOW);
     kv.resetCounters();
-    expect(await recordSuccess(kv, 'shopify-js', NOW + HEALTH_REFRESH_MS)).toBe(true);
+    expect((await recordSuccess(kv, 'shopify-js', NOW + HEALTH_REFRESH_MS)).wrote).toBe(true);
     expect(kv.writes).toBe(1);
   });
 
@@ -140,11 +140,11 @@ describe('health state', () => {
     const kv = new FakeKV();
     await recordSuccess(kv, 'shopify-js', NOW);
     kv.resetCounters();
-    expect(await recordSuccess(kv, 'jsonld', NOW + 60_000)).toBe(true);
+    expect((await recordSuccess(kv, 'jsonld', NOW + 60_000)).wrote).toBe(true);
 
     await recordFailure(kv, 'store down', NOW + 120_000);
     kv.resetCounters();
-    expect(await recordSuccess(kv, 'jsonld', NOW + 180_000)).toBe(true);
+    expect((await recordSuccess(kv, 'jsonld', NOW + 180_000)).wrote).toBe(true);
     expect(kv.read<{ consecutiveFailures: number }>(KV_KEYS.health)?.consecutiveFailures).toBe(0);
   });
 

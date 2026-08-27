@@ -2,6 +2,7 @@ import { FAILURE_ALERT_THRESHOLD, PRODUCT_URL } from '@astra/contract';
 import type {
   AdapterName,
   DetectConfig,
+  DetectorPushData,
   RegisterBody,
   StatusResponse,
   UnregisterBody,
@@ -9,7 +10,7 @@ import type {
 import { detect } from './detect/index';
 import { detectConfig } from './detect/config';
 import type { FetchLike } from './detect/types';
-import { dispatch, type DispatchSummary } from './dispatch';
+import { dispatch, dispatchDetectorPage, type DispatchSummary } from './dispatch';
 import type { KVStore } from './kv';
 import { isValidExpoToken, registerDevice, unregisterDevice } from './registry';
 import {
@@ -45,6 +46,10 @@ export interface PassSummary {
   reason: string | null;
   alerts: number;
   dispatch: DispatchSummary | null;
+  /** Detector page sent this pass, if any. Null when the detector's status did not change. */
+  detectorPage: DetectorPushData['kind'] | null;
+  /** Delivery result of that page. Null when none was sent. */
+  detectorDispatch: DispatchSummary | null;
 }
 
 const EMPTY_DISPATCH: DispatchSummary = {
@@ -73,27 +78,55 @@ export async function runPass(deps: PassDeps): Promise<PassSummary> {
   });
 
   if (!result.ok) {
-    const { consecutiveFailures } = await recordFailure(deps.kv, result.reason, deps.now);
+    const { consecutiveFailures, pageDue } = await recordFailure(deps.kv, result.reason, deps.now);
     if (consecutiveFailures >= FAILURE_ALERT_THRESHOLD) {
-      // Surfaced through `GET /status` and the logs rather than a push: the contract's only push
-      // payload is `kind: 'restock'`, and an app that deep-links "tap to buy" on a
-      // detector-is-broken alert would be worse than silence.
       console.warn(
         `[astra] detector unhealthy: ${consecutiveFailures} consecutive failures. Last: ${result.reason}`,
       );
     }
+    // A broken detector used to be silent, which the user reads as "not in stock yet" -- the one
+    // conclusion it does not support. `recordFailure` has already applied the threshold and the
+    // page cooldown, so this branch only sends. It still writes nothing but health and still
+    // sends no restock push: invariant 1 is untouched by paging.
+    const detectorDispatch = pageDue
+      ? await dispatchDetectorPage({
+          kv: deps.kv,
+          fetchImpl: deps.fetchImpl,
+          now: deps.now,
+          accessToken: deps.accessToken,
+          kind: 'detector-down',
+          consecutiveFailures,
+          reason: result.reason,
+        })
+      : null;
     return {
       ok: false,
       adapter: null,
       reason: result.reason,
       alerts: 0,
       dispatch: null,
+      detectorPage: pageDue ? 'detector-down' : null,
+      detectorDispatch,
     };
   }
 
   const { alerts } = await applySnapshots(deps.kv, result.snapshots, deps.now);
   await cacheSnapshots(deps.kv, result.snapshots, deps.now);
-  await recordSuccess(deps.kv, result.adapter, deps.now);
+  const { recoveryNoticeDue } = await recordSuccess(deps.kv, result.adapter, deps.now);
+
+  // Close the loop only for an outage the user was actually paged about; `recordSuccess` has
+  // already cleared the flag, so this fires once per outage rather than once per pass.
+  const detectorDispatch = recoveryNoticeDue
+    ? await dispatchDetectorPage({
+        kv: deps.kv,
+        fetchImpl: deps.fetchImpl,
+        now: deps.now,
+        accessToken: deps.accessToken,
+        kind: 'detector-recovered',
+        consecutiveFailures: 0,
+        reason: null,
+      })
+    : null;
 
   const dispatchSummary =
     alerts.length === 0
@@ -113,6 +146,8 @@ export async function runPass(deps: PassDeps): Promise<PassSummary> {
     reason: null,
     alerts: alerts.length,
     dispatch: dispatchSummary,
+    detectorPage: recoveryNoticeDue ? 'detector-recovered' : null,
+    detectorDispatch,
   };
 }
 

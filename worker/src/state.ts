@@ -1,4 +1,9 @@
-import { ALERT_COOLDOWN_MS, FAILURE_ALERT_THRESHOLD, KV_KEYS } from '@astra/contract';
+import {
+  ALERT_COOLDOWN_MS,
+  DETECTOR_PAGE_COOLDOWN_MS,
+  FAILURE_ALERT_THRESHOLD,
+  KV_KEYS,
+} from '@astra/contract';
 import type { AdapterName, HealthState, StockSnapshot, VariantState } from '@astra/contract';
 import { getJson, putJson, type KVStore } from './kv';
 
@@ -88,12 +93,31 @@ export async function readHealth(kv: KVStore): Promise<HealthState | null> {
   return getJson<HealthState>(kv, KV_KEYS.health);
 }
 
-/** Record a successful pass. Writes only when something meaningful changed (see budget above). */
+export interface SuccessResult {
+  /** Whether KV was actually touched. */
+  wrote: boolean;
+  /**
+   * True when the caller owes the user a `detector-recovered` push: we paged about an outage and
+   * this pass ended it. False for a success that merely follows failures nobody was told about.
+   */
+  recoveryNoticeDue: boolean;
+}
+
+/**
+ * Record a successful pass. Writes only when something meaningful changed (see budget above).
+ *
+ * `lastPagedAt` doubles as "an outage we paged about is currently open", so a non-null value here
+ * is the whole recovery signal -- and it is cleared by the write below, which is what makes the
+ * recovery notice fire exactly once. A success after failures we never paged about returns
+ * `recoveryNoticeDue: false` on purpose: telling someone the watcher recovered from an outage
+ * they were never told about is pure noise, and it trains them to ignore the channel that
+ * matters.
+ */
 export async function recordSuccess(
   kv: KVStore,
   adapter: AdapterName,
   now: number,
-): Promise<boolean> {
+): Promise<SuccessResult> {
   const previous = await readHealth(kv);
   const stale =
     previous === null ||
@@ -101,17 +125,35 @@ export async function recordSuccess(
     now - previous.lastSuccessAt >= HEALTH_REFRESH_MS;
   const recovered = previous !== null && previous.consecutiveFailures !== 0;
   const adapterChanged = previous !== null && previous.lastAdapter !== adapter;
+  // `?? null`: records written before `lastPagedAt` existed simply do not have the field.
+  const recoveryNoticeDue = (previous?.lastPagedAt ?? null) !== null;
 
-  if (previous !== null && !stale && !recovered && !adapterChanged) return false;
+  // No extra writes in the steady state: `recoveryNoticeDue` can only be true when an outage
+  // just ended, and `recovered` is already true in that case.
+  if (previous !== null && !stale && !recovered && !adapterChanged && !recoveryNoticeDue) {
+    return { wrote: false, recoveryNoticeDue: false };
+  }
 
   const next: HealthState = {
     lastSuccessAt: now,
     consecutiveFailures: 0,
     lastAdapter: adapter,
     lastReason: null,
+    lastPagedAt: null,
   };
   await putJson(kv, KV_KEYS.health, next);
-  return true;
+  return { wrote: true, recoveryNoticeDue };
+}
+
+export interface FailureResult {
+  consecutiveFailures: number;
+  /** Whether KV was actually touched. */
+  wrote: boolean;
+  /**
+   * True when the caller should send a `detector-down` push for this pass. Already
+   * rate-limited by `DETECTOR_PAGE_COOLDOWN_MS`, so the caller never needs to decide.
+   */
+  pageDue: boolean;
 }
 
 /**
@@ -122,27 +164,39 @@ export async function recordSuccess(
  * multi-hour outage at one write per minute would blow the daily budget. So every failure is
  * written up to the threshold, and past it only once an hour (every 60th pass) -- enough to keep
  * `/status` roughly honest at ~24 writes/day during a sustained outage.
+ *
+ * Paging is decided here rather than in `runPass` because the decision needs `lastPagedAt`, which
+ * only this function reads and writes -- and because persisting the page and deciding to send it
+ * must not drift apart. A page is a state change and therefore worth a write, but it is capped at
+ * one per `DETECTOR_PAGE_COOLDOWN_MS` (4/day at the current 6h), so it cannot move the budget.
  */
 export async function recordFailure(
   kv: KVStore,
   reason: string,
   now: number,
-): Promise<{ consecutiveFailures: number; wrote: boolean }> {
-  void now; // failures never advance `lastSuccessAt`; the parameter keeps the call sites uniform
+): Promise<FailureResult> {
   const previous = await readHealth(kv);
   const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
+  // `?? null`: records written before `lastPagedAt` existed simply do not have the field.
+  const lastPagedAt = previous?.lastPagedAt ?? null;
+  const pageDue =
+    consecutiveFailures >= FAILURE_ALERT_THRESHOLD &&
+    (lastPagedAt === null || now - lastPagedAt >= DETECTOR_PAGE_COOLDOWN_MS);
+
   const shouldWrite =
-    consecutiveFailures <= FAILURE_ALERT_THRESHOLD || consecutiveFailures % 60 === 0;
-  if (!shouldWrite) return { consecutiveFailures, wrote: false };
+    pageDue || consecutiveFailures <= FAILURE_ALERT_THRESHOLD || consecutiveFailures % 60 === 0;
+  if (!shouldWrite) return { consecutiveFailures, wrote: false, pageDue: false };
 
   const next: HealthState = {
+    // A failure never advances `lastSuccessAt`; `now` is only used to time the page.
     lastSuccessAt: previous?.lastSuccessAt ?? null,
     consecutiveFailures,
     lastAdapter: previous?.lastAdapter ?? null,
     lastReason: reason.slice(0, 500),
+    lastPagedAt: pageDue ? now : lastPagedAt,
   };
   await putJson(kv, KV_KEYS.health, next);
-  return { consecutiveFailures, wrote: true };
+  return { consecutiveFailures, wrote: true, pageDue };
 }
 
 export interface SnapshotCache {
