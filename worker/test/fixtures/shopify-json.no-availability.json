@@ -1,0 +1,23 @@
+{
+  "product": {
+    "id": 8412736094321,
+    "title": "REDMAGIC Astra 2 Gaming Tablet",
+    "handle": "redmagic-astra-2-gaming-tablet",
+    "variants": [
+      {
+        "id": 44892134567001,
+        "title": "Silver / 16GB + 512GB",
+        "price": "899.00",
+        "sku": "RM-ASTRA2-SL-16-512",
+        "position": 1
+      },
+      {
+        "id": 44892134567002,
+        "title": "Silver / 24GB + 1TB",
+        "price": "1099.50",
+        "sku": "RM-ASTRA2-SL-24-1T",
+        "position": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+name: CI
+
+# Typecheck and tests only -- deliberately no deploy step, no Cloudflare/Expo credentials, no
+# secrets of any kind. This project's only real deploys (`wrangler deploy`, `eas build`) run from
+# a developer's machine, per the README credential checklist; this workflow exists purely to
+# catch broken types and broken worker logic on every push/PR.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref instead of letting them queue.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck workspace packages
+        run: pnpm typecheck
+
+      # scripts/** is not a pnpm workspace package (see scripts/tsconfig.json for why), so
+      # `pnpm typecheck` above does not reach it. Check it explicitly instead.
+      - name: Typecheck scripts/
+        run: pnpm exec tsc --noEmit -p scripts/tsconfig.json
+
+      - name: Test
+        run: pnpm test

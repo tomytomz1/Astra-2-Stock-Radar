@@ -1,0 +1,70 @@
+# Cloudflare Worker config for @astra/worker.
+#
+# WHY THIS FILE LIVES HERE (worker/wrangler.toml) AND NOT AT THE REPO ROOT:
+#   `main = "src/index.ts"` is resolved relative to this file, and the worker's source lives at
+#   worker/src/index.ts -- so wrangler.toml has to sit in worker/ for that relative path to be
+#   right. It also has to be discoverable by plain `wrangler <command>` run with worker/ as the
+#   working directory, which is exactly what `pnpm --filter @astra/worker deploy` (= root's
+#   `pnpm deploy:worker`) and `pnpm --filter @astra/worker exec wrangler ...` both do -- wrangler
+#   walks up from cwd looking for a config file, finds this one, and never needs a `--config`
+#   flag. A root-level wrangler.toml would need `main` rewritten to `worker/src/index.ts` and
+#   every wrangler invocation would need `--cwd worker` or `--config wrangler.toml`; keeping it
+#   next to the code it configures is simpler and matches how the `@astra/worker` package.json
+#   already assumes it ("deploy": "wrangler deploy", run from worker/).
+#
+# The KV namespace id below is deployment-specific -- see the README credential checklist for how
+# to create the namespace and fill it in. Never commit a real id; REPLACE_WITH_... placeholders
+# are intentional and wrangler will fail loudly (not silently) if you deploy without swapping them.
+
+name = "astra-2-stock-radar"
+main = "src/index.ts"
+
+# Bump this to a recent date before your first deploy (today's date is always safe as long as
+# it's not in the future). It pins which version of the Workers runtime's APIs/defaults this
+# Worker was written against; wrangler refuses a date it doesn't recognise, so if deploy fails
+# with a compatibility_date error, this is the line to check first.
+# https://developers.cloudflare.com/workers/configuration/compatibility-dates/
+compatibility_date = "2025-01-08"
+
+# 1-minute cron -- the only trigger this Worker has. No HTTP routes are needed for the poll loop
+# itself; /register, /unregister, and /status (consumed by the app) are served by the same
+# `fetch` handler via the default workers.dev route (see the README for the base URL to give the
+# app as EXPO_PUBLIC_WORKER_URL).
+#
+# Invariant 3 (write KV only when state actually changes) exists because of this line: 1-minute
+# cron is 1440 passes/day against KV's 1000-writes/day free-tier limit. Do not lower the cron
+# interval without re-checking that budget.
+[triggers]
+crons = ["* * * * *"]
+
+# Binding name STOCK_KV is what worker/src/kv.ts and worker/src/index.ts read as `env.STOCK_KV` --
+# if you rename this binding, update those call sites too (out of scope for this file, but the
+# two must always agree or the worker throws at request time, not at deploy time).
+[[kv_namespaces]]
+binding = "STOCK_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"
+
+[observability]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+#
+# Nothing in the current contract (packages/contract/src/index.ts) requires a secret: /register
+# takes no auth token, and Expo's push-send endpoint needs no credential for a basic send. Two
+# secrets are plausible additions and worth knowing the command for even though neither is wired
+# up yet -- check worker/src/index.ts before assuming either is actually read at runtime:
+#
+#   # An Expo access token, if the worker ever opts into Expo's "Enhanced Security" push sends
+#   # (recommended once this is public, to stop others from sending pushes through your tokens):
+#   wrangler secret put EXPO_ACCESS_TOKEN
+#
+#   # A shared secret to protect /register or /unregister from being spammed by strangers who
+#   # find the worker's URL, if that's ever added:
+#   wrangler secret put ADMIN_TOKEN
+#
+# Run either from worker/ (or `pnpm --filter @astra/worker exec wrangler secret put <NAME>`),
+# paste the value at the prompt -- never pass secrets as a command-line argument (shell history)
+# or commit them to this file. `wrangler secret list` shows names only, never values.
