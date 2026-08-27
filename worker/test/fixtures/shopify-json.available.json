@@ -1,0 +1,60 @@
+{
+  "product": {
+    "id": 8412736094321,
+    "title": "REDMAGIC Astra 2 Gaming Tablet",
+    "handle": "redmagic-astra-2-gaming-tablet",
+    "published_at": "2026-02-18T09:00:00+08:00",
+    "vendor": "REDMAGIC",
+    "product_type": "Tablet",
+    "variants": [
+      {
+        "id": 44892134567001,
+        "product_id": 8412736094321,
+        "title": "Silver / 16GB + 512GB",
+        "price": "899.00",
+        "sku": "RM-ASTRA2-SL-16-512",
+        "position": 1,
+        "compare_at_price": null,
+        "inventory_management": "shopify",
+        "inventory_policy": "deny",
+        "inventory_quantity": 7,
+        "option1": "Silver",
+        "option2": "16GB + 512GB",
+        "taxable": true,
+        "requires_shipping": true
+      },
+      {
+        "id": 44892134567002,
+        "product_id": 8412736094321,
+        "title": "Silver / 24GB + 1TB",
+        "price": "1099.50",
+        "sku": "RM-ASTRA2-SL-24-1T",
+        "position": 2,
+        "compare_at_price": null,
+        "inventory_management": "shopify",
+        "inventory_policy": "deny",
+        "inventory_quantity": 0,
+        "option1": "Silver",
+        "option2": "24GB + 1TB",
+        "taxable": true,
+        "requires_shipping": true
+      },
+      {
+        "id": 44892134567003,
+        "product_id": 8412736094321,
+        "title": "Midnight / 16GB + 512GB",
+        "price": "899.99",
+        "sku": "RM-ASTRA2-MN-16-512",
+        "position": 3,
+        "compare_at_price": null,
+        "inventory_management": null,
+        "inventory_policy": "deny",
+        "inventory_quantity": 0,
+        "option1": "Midnight",
+        "option2": "16GB + 512GB",
+        "taxable": true,
+        "requires_shipping": true
+      }
+    ]
+  }
+}

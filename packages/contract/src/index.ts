@@ -109,6 +109,24 @@ export interface RestockPushData {
   url: string;
 }
 
+/**
+ * Sent when the detector itself breaks or recovers — the store became unreadable, so the
+ * system has gone blind and silence can no longer be trusted to mean "not in stock".
+ *
+ * Deliberately a separate `kind` from `restock`: these must never deep-link to the product
+ * page. A "tap to buy" affordance on an alert that means "I cannot see the store" would be
+ * actively misleading.
+ */
+export interface DetectorPushData {
+  kind: 'detector-down' | 'detector-recovered';
+  consecutiveFailures: number;
+  /** Last failure reason, truncated. Null on recovery. */
+  reason: string | null;
+}
+
+/** Every push payload this system can send. Consumers should switch on `kind`. */
+export type PushData = RestockPushData | DetectorPushData;
+
 // ---------------------------------------------------------------------------
 // Tunables — see plan file for the reasoning behind each
 // ---------------------------------------------------------------------------
@@ -125,8 +143,31 @@ export const EXPO_PUSH_BATCH_SIZE = 100;
 export const EXPO_PUSH_SEND_URL = 'https://exp.host/--/api/v2/push/send';
 export const EXPO_PUSH_RECEIPT_URL = 'https://exp.host/--/api/v2/push/getReceipts';
 
+/**
+ * Android notification channels. These MUST live in the contract: the app creates the channel
+ * and the worker names it in the outgoing push, and if the two strings disagree Android
+ * silently delivers on a fallback channel instead of erroring — the high-priority sound and
+ * importance configured on the real channel are just quietly not applied.
+ *
+ * Two channels, not one, so a detector-down page can be muted independently of a restock
+ * alert. Muting the thing you actually care about to silence the plumbing would be the wrong
+ * trade to force on anyone.
+ */
+export const ANDROID_CHANNEL_RESTOCK = 'restock-alerts';
+export const ANDROID_CHANNEL_DETECTOR = 'detector-alerts';
+
 /** Consecutive detection failures before the detector itself is reported as broken. */
 export const FAILURE_ALERT_THRESHOLD = 15;
+
+/**
+ * How long to stay quiet after paging about a broken detector, in ms.
+ *
+ * At a 1-minute cron, `FAILURE_ALERT_THRESHOLD` means roughly 15 minutes of sustained failure
+ * before the first page — long enough that a transient blip or one bad deploy on the store's
+ * side does not wake anyone. After that, a multi-day outage re-pages on this interval rather
+ * than every pass.
+ */
+export const DETECTOR_PAGE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /** KV key helpers. Centralised so the worker and the simulate-restock script cannot drift. */
 export const KV_KEYS = {
@@ -149,6 +190,13 @@ export interface HealthState {
   consecutiveFailures: number;
   lastAdapter: AdapterName | null;
   lastReason: string | null;
+  /**
+   * Epoch ms of the last detector-down page, or null if the current outage has not been paged
+   * (or there is no outage). Doubles as the "an outage is open" flag: non-null on a successful
+   * pass means a recovery notice is owed. Read defensively with `?? null` — records written
+   * before this field existed will not have it.
+   */
+  lastPagedAt: number | null;
 }
 
 /** One registered device. */
