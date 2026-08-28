@@ -45,6 +45,7 @@
         "app/src/**",
         "app/assets/**",
         "app/App.tsx",
+        "app/index.js",
         "app/app.config.ts",
         "app/app.json",
         "app/babel.config.js",

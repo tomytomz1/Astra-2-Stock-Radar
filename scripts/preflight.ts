@@ -354,6 +354,32 @@ function checkAppBundlerResolves(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 8e: the app must actually bundle
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs Metro for real via `expo export` — the same bundling step EAS Build performs.
+ *
+ * This is the check that would have saved four failed remote builds. Everything else in this
+ * file was green through all of them: types, tests, ownership, Windows spawning, even module
+ * resolution. None of it touched whether Metro could produce a bundle, and the failure was only
+ * observable fifteen minutes into an EAS build.
+ *
+ * It costs ~15s, which is the whole point: a local 15 seconds replaces a remote 20 minutes.
+ * Skipped under --structural-only, where the caller has said they want the fast checks only.
+ */
+function checkAppBundles(): void {
+  const out = join(ROOT, 'app', '.preflight-export');
+  const { ok, output } = run('pnpm', [
+    '--filter', '@astra/app', 'exec',
+    'expo', 'export', '--platform', 'ios', '--output-dir', out,
+  ]);
+  // Best-effort cleanup; a leftover directory is gitignored and harmless.
+  run('node', ['-e', `require('fs').rmSync(${JSON.stringify(out)},{recursive:true,force:true})`]);
+  record('the app bundles (expo export)', ok, ok ? [] : tail(output, 20));
+}
+
+// ---------------------------------------------------------------------------
 // 9: agent ownership must be unambiguous
 // ---------------------------------------------------------------------------
 
@@ -459,6 +485,7 @@ function main(): void {
     process.stdout.write('  (--structural-only: skipping build and tests, CI runs those as named steps)\n\n');
   } else {
     checkBuildAndTests();
+    checkAppBundles();
   }
   checkNoHardcodedContractValues();
   checkNoShadowedScriptNames();
