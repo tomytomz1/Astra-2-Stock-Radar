@@ -75,6 +75,13 @@ export interface ExpoMessage<D extends PushData = PushData> {
    * Requires the `com.apple.developer.usernotifications.time-sensitive` entitlement, declared in
    * app.config.ts. Without that entitlement iOS silently downgrades it to `active`, so shipping
    * this before a rebuild is a no-op rather than a regression.
+   *
+   * The wire value is kebab-case and is NOT the same enum as `InterruptionLevel` in
+   * `expo-notifications`, which spells the same level `timeSensitive` for the client-side
+   * presentation API. The two look interchangeable and are not; sending the camelCase form here
+   * would leave alerts suppressible by Sleep Focus with nothing failing loudly. Source of truth
+   * is Expo's own server SDK, `expo-server-sdk/build/ExpoClient.d.ts`:
+   *   interruptionLevel?: 'active' | 'critical' | 'passive' | 'time-sensitive';
    */
   interruptionLevel?: 'passive' | 'active' | 'time-sensitive' | 'critical';
 }
