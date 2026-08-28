@@ -37,6 +37,12 @@ import { execFileSync } from 'node:child_process';
 
 import { HEARTBEAT_INTERVAL_MS, KV_KEYS } from '../packages/contract/src/index.js';
 import type { VariantState } from '../packages/contract/src/index.js';
+import {
+  checkTarget,
+  describeSnapshot,
+  parseSnapshotCache,
+  type SnapshotCache,
+} from './variant-target';
 
 /** The one-shot trigger key. Named in the contract so the worker and this script cannot drift. */
 const FORCE_KEY = KV_KEYS.forceAlert;
@@ -196,7 +202,29 @@ function kvListVariantKeys(): string[] {
 }
 
 async function listAndExit(): Promise<void> {
-  log('No variant id given. Listing variant states currently in KV...');
+  // Prefer the snapshot cache over variant state keys. State keys ACCUMULATE -- nothing deletes
+  // one when the store stops returning that variant -- so the key list can hold twice as many
+  // ids as the store actually has, half of them stale and unable to fire. Offering that as a
+  // menu is how a dead id gets picked.
+  let cache: SnapshotCache | null = null;
+  try {
+    cache = parseSnapshotCache(kvGet(KV_KEYS.snapshotCache));
+  } catch {
+    cache = null;
+  }
+  if (cache !== null && cache.snapshots.length > 0) {
+    log("Variants the worker can currently see (its last successful reading):");
+    log('');
+    for (const snapshot of cache.snapshots) log(describeSnapshot(snapshot));
+    log('');
+    log('Re-run with one of the ids above: pnpm simulate-restock <variantId> [--dry-run]');
+    process.exitCode = 0;
+    return;
+  }
+
+  log('No snapshot cache yet -- falling back to raw variant state keys in KV.');
+  log('These ACCUMULATE and may include stale ids the store no longer returns; an alert forced');
+  log('for one of those is silently discarded. Prefer re-running once the worker has succeeded.');
   log('');
   let keys: string[];
   try {
@@ -288,6 +316,40 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Validate BEFORE writing anything. The worker only alerts for a variant present in the pass's
+  // snapshots, so a trigger naming anything else is consumed and discarded without sending. That
+  // is correct behaviour and indistinguishable from success at the point of arming -- which is
+  // exactly how a fixture id from the test suite got armed once, and a notification waited for
+  // that could never arrive.
+  let cache: SnapshotCache | null = null;
+  try {
+    cache = parseSnapshotCache(kvGet(KV_KEYS.snapshotCache));
+  } catch {
+    // A cache read failure is not fatal: fall through to the no-cache path, which warns and
+    // proceeds rather than blocking a diagnosis of a worker that is not working.
+    cache = null;
+  }
+  const check = checkTarget(cache, variantId);
+  if (!check.ok && check.reason === 'unknown-variant') {
+    log(`"${variantId}" is not a variant the worker can currently see.`);
+    log('');
+    log('A force-alert for an unknown id is consumed and discarded WITHOUT sending anything, so');
+    log('arming it would leave you waiting for a notification that cannot arrive. Refusing.');
+    log('');
+    log(`Live variants (from ${KV_KEYS.snapshotCache}, the worker's last successful reading):`);
+    for (const snapshot of check.live) log(describeSnapshot(snapshot));
+    log('');
+    log('Re-run with one of those ids: pnpm simulate-restock <variantId> [--dry-run]');
+    process.exitCode = 1;
+    return;
+  }
+  if (!check.ok) {
+    log('No snapshot cache yet, so the target cannot be validated -- the worker has not completed');
+    log('a successful pass. Proceeding anyway: if this id is not one the worker sees, the trigger');
+    log('will be consumed silently and no notification will arrive.');
+    log('');
+  }
+
   const key = KV_KEYS.variantState(variantId);
   log(`Target key: ${key}   (binding: ${KV_BINDING}, remote KV -- no --local flag)`);
   log('');
@@ -352,7 +414,9 @@ async function main(): Promise<void> {
   log('To undo -- restore exactly what was there before this script ran -- run:');
   // `--preview false` is not optional: wrangler.toml carries both id and preview_id, and
   // `kv key` refuses to guess which namespace is meant.
-  const suffix = `--binding ${KV_BINDING} --preview false`;
+  // `--remote` is as load-bearing as `--preview false`: wrangler 4 defaults `kv key` to LOCAL
+  // storage, so without it these undo commands would report success having touched nothing.
+  const suffix = `--binding ${KV_BINDING} --preview false --remote`;
   if (currentRaw) {
     log(`  pnpm --filter @astra/worker exec wrangler kv key put "${key}" '${currentRaw}' ${suffix}`);
   } else {

@@ -60,6 +60,7 @@
         "app/eas.json",
         "scripts/bootstrap.ts",
         "scripts/eas-json.ts",
+        "scripts/variant-target.ts",
         "scripts/probe.ts",
         "scripts/simulate-restock.ts",
         "scripts/tsconfig.json",

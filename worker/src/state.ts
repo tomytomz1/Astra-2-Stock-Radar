@@ -27,9 +27,12 @@ import { getJson, putJson, type KVStore } from './kv';
 
 /**
  * Cache of the last materially-different snapshot set, used to answer `GET /status` without
- * hitting the store on every request. Worker-internal, so it is not in the shared `KV_KEYS`.
+ * hitting the store on every request.
+ *
+ * Re-exported from the contract rather than declared here: `simulate-restock` reads the same key
+ * to validate a force-alert target, which makes it a cross-package value.
  */
-export const SNAPSHOT_CACHE_KEY = 'cache:snapshots';
+export const SNAPSHOT_CACHE_KEY = KV_KEYS.snapshotCache;
 
 /**
  * How stale `HealthState.lastSuccessAt` is allowed to get before we spend a write refreshing it.

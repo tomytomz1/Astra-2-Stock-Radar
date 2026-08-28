@@ -300,6 +300,14 @@ export const KV_KEYS = {
    * device.
    */
   forceAlert: 'debug:force-alert',
+  /**
+   * Last materially-different snapshot set, written by the worker and read by `/status`.
+   *
+   * In the contract rather than worker-internal because `simulate-restock` reads it too: it is
+   * the only record of which variant ids the worker can currently SEE, and therefore the only
+   * way for the script to reject a force-alert naming a variant that cannot possibly fire.
+   */
+  snapshotCache: 'cache:snapshots',
 } as const;
 
 /** Persisted per-variant latch state. Written only when it changes (free-tier write budget). */
