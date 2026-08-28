@@ -54,19 +54,36 @@ function record(name: string, ok: boolean, detail: string[] = []): void {
 }
 
 /**
- * Windows resolves `pnpm` and `npx` to `.cmd` shims, and since Node's CVE-2024-27980 fix
- * `execFile` refuses to run a `.cmd` at all — it fails with EINVAL whether or not the name is
- * suffixed. The shell has to do the resolution, so `shell: true` is required on Windows rather
- * than merely convenient. Every argument passed here is an internal constant with no spaces or
- * metacharacters, so shell quoting carries no injection risk.
+ * Running pnpm without a shell, on every platform.
+ *
+ * Windows resolves `pnpm` to a `.cmd` shim, and since Node's CVE-2024-27980 fix `execFile`
+ * refuses to run one at all (EINVAL, suffixed or not). `shell: true` works but concatenates
+ * arguments instead of escaping them — Node warns about exactly this (DEP0190), and
+ * `simulate-restock` passes a variant id straight from the command line, so the concern is real
+ * here rather than theoretical.
+ *
+ * `npm_execpath` is set by pnpm for any script it runs and points at pnpm's own JS entrypoint,
+ * so invoking Node on it directly sidesteps the shim entirely: no shell, arguments passed as a
+ * real array, nothing to escape. The shell path remains only as a fallback for direct
+ * `tsx scripts/...` invocation outside a pnpm script.
  */
-const IS_WINDOWS = process.platform === 'win32';
+const PNPM_JS: string | undefined = process.env.npm_execpath;
+
+function pnpmCommand(args: string[]): { file: string; args: string[]; shell: boolean } {
+  if (PNPM_JS !== undefined && PNPM_JS !== '') {
+    return { file: process.execPath, args: [PNPM_JS, ...args], shell: false };
+  }
+  return { file: 'pnpm', args, shell: process.platform === 'win32' };
+}
 
 function run(cmd: string, args: string[]): { ok: boolean; output: string } {
   try {
-    const output = execFileSync(cmd, args, {
+    // Only pnpm needs the shim dance. `git` is a real executable on every platform and runs
+    // through execFile directly — routing it through pnpmCommand would silently launch pnpm.
+    const spec = cmd === 'pnpm' ? pnpmCommand(args) : { file: cmd, args, shell: false };
+    const output = execFileSync(spec.file, spec.args, {
       cwd: ROOT,
-      shell: IS_WINDOWS,
+      shell: spec.shell,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10 * 60_000,
@@ -255,31 +272,31 @@ function checkCiParity(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * On Windows, pnpm and npx are `.cmd` shims and Node's `execFile` refuses to run them at all
- * since the CVE-2024-27980 fix — it fails with EINVAL whether or not the name carries a `.cmd`
- * suffix. Only `shell: true` works. Every call site must set it (via IS_WINDOWS).
+ * Every child-process call must route through `pnpmCommand()`, which runs pnpm's JS entrypoint
+ * under Node directly — no shell, arguments passed as a real array.
  *
- * This is invisible from Linux and macOS, where the bare name resolves fine. All three scripts
- * shipped broken for Windows twice: once with no handling at all, then again with a `.cmd`
- * suffix that does not actually work on modern Node. Hence a check rather than care.
+ * The history here is why this is checked rather than trusted. Windows resolves `pnpm` to a
+ * `.cmd` shim; a bare name fails with ENOENT, a `.cmd` suffix fails with EINVAL under Node's
+ * CVE-2024-27980 fix, and `shell: true` works but concatenates arguments rather than escaping
+ * them (Node DEP0190) — which matters because `simulate-restock` passes a command-line variant
+ * id through. Three attempts, two of them shipped, none observable from Linux or macOS.
  */
 function checkWindowsSafeCommands(): void {
   const offenders: string[] = [];
   // Built by concatenation so this pattern does not match its own source line.
-  const callPattern = new RegExp('execFileSync' + '\\(', 'g');
+  const callPattern = new RegExp('execFileSync' + '\\(\\s*([A-Za-z_.\'"][^,]*),', 'g');
   for (const file of walk(join(ROOT, 'scripts'))) {
     if (file.endsWith('.d.ts')) continue;
     const source = stripComments(readFileSync(file, 'utf8'));
     for (const m of source.matchAll(callPattern)) {
-      // The options object is the third argument; scan to the end of the call.
-      const window = source.slice(m.index, m.index + 600);
-      if (window.includes('shell:')) continue;
+      const arg = (m[1] as string).trim();
+      if (arg === 'spec.file') continue;
       offenders.push(
-        `${relative(ROOT, file)}: a child-process call omits the shell option — it fails with EINVAL on Windows`,
+        `${relative(ROOT, file)}: child process launched as ${arg} — route it through pnpmCommand() instead`,
       );
     }
   }
-  record('external commands resolve on Windows', offenders.length === 0, offenders);
+  record('child processes launched without a shell', offenders.length === 0, offenders);
 }
 
 // ---------------------------------------------------------------------------

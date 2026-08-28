@@ -60,18 +60,33 @@ interface WranglerResult {
  * node_modules layout.
  */
 /**
- * Windows resolves `pnpm` and `npx` to `.cmd` shims, and since Node's CVE-2024-27980 fix
- * `execFile` refuses to run a `.cmd` at all — it fails with EINVAL whether or not the name is
- * suffixed. The shell has to do the resolution, so `shell: true` is required on Windows rather
- * than merely convenient. Every argument passed here is an internal constant with no spaces or
- * metacharacters, so shell quoting carries no injection risk.
+ * Running pnpm without a shell, on every platform.
+ *
+ * Windows resolves `pnpm` to a `.cmd` shim, and since Node's CVE-2024-27980 fix `execFile`
+ * refuses to run one at all (EINVAL, suffixed or not). `shell: true` works but concatenates
+ * arguments instead of escaping them — Node warns about exactly this (DEP0190), and
+ * `simulate-restock` passes a variant id straight from the command line, so the concern is real
+ * here rather than theoretical.
+ *
+ * `npm_execpath` is set by pnpm for any script it runs and points at pnpm's own JS entrypoint,
+ * so invoking Node on it directly sidesteps the shim entirely: no shell, arguments passed as a
+ * real array, nothing to escape. The shell path remains only as a fallback for direct
+ * `tsx scripts/...` invocation outside a pnpm script.
  */
-const IS_WINDOWS = process.platform === 'win32';
+const PNPM_JS: string | undefined = process.env.npm_execpath;
+
+function pnpmCommand(args: string[]): { file: string; args: string[]; shell: boolean } {
+  if (PNPM_JS !== undefined && PNPM_JS !== '') {
+    return { file: process.execPath, args: [PNPM_JS, ...args], shell: false };
+  }
+  return { file: 'pnpm', args, shell: process.platform === 'win32' };
+}
 
 function runWrangler(args: string[]): WranglerResult {
   try {
-    const stdout = execFileSync('pnpm', ['--filter', '@astra/worker', 'exec', 'wrangler', ...args], {
-      shell: IS_WINDOWS,
+    const spec = pnpmCommand(['--filter', '@astra/worker', 'exec', 'wrangler', ...args]);
+    const stdout = execFileSync(spec.file, spec.args, {
+      shell: spec.shell,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

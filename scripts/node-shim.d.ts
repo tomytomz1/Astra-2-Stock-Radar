@@ -19,6 +19,8 @@ declare const process: {
   exitCode: number | undefined;
   exit(code?: number): never;
   readonly platform: string;
+  readonly execPath: string;
+  readonly env: Record<string, string | undefined>;
   stdout: { write(chunk: string): boolean };
 };
 
