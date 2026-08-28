@@ -15,6 +15,7 @@ import { HealthBanner } from '../components/HealthBanner';
 import { PermissionBanner } from '../components/PermissionBanner';
 import { RegistrationBanner } from '../components/RegistrationBanner';
 import { VariantRow } from '../components/VariantRow';
+import { openVariant } from '../openVariant';
 import type { PushSetupState } from '../hooks/usePushSetup';
 import type { StatusState } from '../hooks/useStatus';
 import type { VariantSelectionState } from '../hooks/useVariantSelection';
@@ -95,7 +96,11 @@ export function StatusScreen({ status, push, selection, onOpenPicker }: Props) {
         data={snapshots}
         keyExtractor={(item: StockSnapshot) => item.variantId}
         renderItem={({ item }) => (
-          <VariantRow snapshot={item} watching={selection.isSelected(item.variantId)} />
+          <VariantRow
+            snapshot={item}
+            watching={selection.isSelected(item.variantId)}
+            onPress={() => openVariant(item.variantId)}
+          />
         )}
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         contentContainerStyle={styles.listContent}
