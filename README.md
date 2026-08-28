@@ -101,37 +101,54 @@ longer one.
 
 | # | Step | Command | Time |
 |---|------|---------|------|
-| 1 | Install dependencies | `pnpm install` | ~1 min |
-| 1b | Link the Expo project and export its id | `npx eas init`, then set `EAS_PROJECT_ID` (see below) | ~2 min |
-| 2 | Start the app build — do this first, then move straight to step 3 while it queues | `npx eas login` then `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
+| 1 | Install dependencies (from the repo root) | `pnpm install` | ~1 min |
+| 1a | Install the EAS CLI | `npm install -g eas-cli` | ~1 min |
+| 1b | Link the Expo project — **run from `app/`** | `cd app`, `eas login`, `eas init` | ~2 min |
+| 2 | Start the app build — **from `app/`** — then move straight to step 3 while it queues | `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
 | 3 | Provision Cloudflare and deploy the Worker — do this while step 2 builds | `pnpm bootstrap` | ~2–5 min |
 | 4 | Add secrets (optional, see below) | none strictly required | — |
 | 5 | Install on your devices | open the install link EAS printed on each device | immediate — no review, no TestFlight processing |
 | 6 | Grant permission, pick variants | in-app | ~1 min |
 | 7 | Prove the pipeline end to end | `pnpm simulate-restock <variantId>` | ~1–2 min (waits for the next cron tick) |
 
-### Step 1b detail — `eas init` and `EAS_PROJECT_ID`
+### Step 1b detail — `eas init`, and which directory to run it from
+
+**Every `eas` command must run from `app/`, not the repo root.** This is a pnpm monorepo: the
+Expo app is `app/`, which is where `package.json` declares `expo` and where `eas.json` lives.
+Run `eas init` from the root and it names the project after the wrong folder, writes `app.json`
+in the wrong place, and warns `Cannot determine which native SDK version your project uses
+because the module 'expo' is not installed` — which is the giveaway that it is looking at the
+wrong directory.
+
+`npx eas` does not work: the npm package is `eas-cli` while the binary is `eas`, so npx cannot
+resolve it. Install it once instead.
 
 ```
-npx expo login
-npx eas init          # prints a project id
+npm install -g eas-cli
+cd app
+eas login
+eas init
 ```
 
-`eas init` writes the id into `app.json` for a static config. This project uses a **dynamic**
-config (`app/app.config.ts`), which the EAS CLI reads but never edits — so it prints the id and
-leaves the wiring to you. Set it in the shell you run `eas build` from:
+`eas init` writes the project id into `app/app.json`. That file is picked up automatically —
+`app.config.ts` receives it as the static config and spreads it through (`...config.extra`),
+with `config.extra?.eas?.projectId` as the resolved fallback. So no environment variable is
+normally needed. Commit `app/app.json`; the id is a public project identifier, not a secret.
+
+`EAS_PROJECT_ID` remains as an override for the case where `app.json` is absent or you want to
+build against a different project:
 
 ```bash
 # macOS / Linux
-export EAS_PROJECT_ID=<the id eas init printed>
+export EAS_PROJECT_ID=<id>
 ```
 ```powershell
 # Windows PowerShell — `export` is not a PowerShell command and silently does nothing
-$env:EAS_PROJECT_ID = "<the id eas init printed>"
+$env:EAS_PROJECT_ID = "<id>"
 ```
 
-The id is required twice over: `getExpoPushTokenAsync` needs it to mint a push token at all, and
-`updates.url` is derived from it. Without it the app builds but can never register for pushes.
+The id is required twice over: `getExpoPushTokenAsync` cannot mint a push token without it, and
+`updates.url` is derived from it.
 
 ### Step 2 detail — build
 
