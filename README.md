@@ -111,6 +111,30 @@ longer one.
 | 6 | Grant permission, pick variants | in-app | ~1 min |
 | 7 | Prove the pipeline end to end | `pnpm simulate-restock <variantId>` | ~1–2 min (waits for the next cron tick) |
 
+### Step 7 detail — proving delivery
+
+```
+pnpm simulate-restock <variantId>
+```
+
+This writes two keys: it resets that variant's alert latch, **and** sets a one-shot trigger
+(`debug:force-alert`) that the next cron pass consumes, acts on, and deletes.
+
+The trigger is what actually produces a notification, and it is not optional padding. Resetting
+the latch alone cannot fire anything while the product is sold out: the Worker re-reads the live
+store every pass, sees no false→true edge, and correctly stays silent. That is right for the
+product and useless for answering "has a push ever reached this phone", which is the one question
+setup needs to answer.
+
+The alert it sends is byte-identical to a genuine restock — a test notification that looked
+different would not be testing the thing you care about. `RestockPushData.test` marks it in the
+payload for any future consumer that needs to tell them apart.
+
+It is a KV key rather than an HTTP endpoint on purpose: setting it requires Cloudflare account
+auth through `wrangler`, where a debug route would let anyone holding the Worker URL ring your
+phone. A failing detect pass ignores the trigger entirely and leaves it set, so the guarantee
+that an unreachable store never produces an alert is not weakened by the test path.
+
 ### Step 1b detail — `eas init`, and which directory to run it from
 
 **Every `eas` command must run from `app/`, not the repo root.** This is a pnpm monorepo: the
@@ -241,7 +265,7 @@ Store. You do not need it for a personal build.
 
 ```
 pnpm simulate-restock                # no args: lists current variant states from KV
-pnpm simulate-restock <variantId>    # resets that variant's alert latch
+pnpm simulate-restock <variantId>    # fires a real push for that variant on the next cron tick
 pnpm simulate-restock <variantId> --dry-run   # shows what would be written, writes nothing
 ```
 

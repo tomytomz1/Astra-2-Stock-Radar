@@ -1,10 +1,11 @@
-import { FAILURE_ALERT_THRESHOLD, PRODUCT_URL } from '@astra/contract';
+import { FAILURE_ALERT_THRESHOLD, KV_KEYS, PRODUCT_URL } from '@astra/contract';
 import type {
   AdapterName,
   DetectConfig,
   DetectorPushData,
   RegisterBody,
   StatusResponse,
+  StockSnapshot,
   UnregisterBody,
 } from '@astra/contract';
 import { detect } from './detect/index';
@@ -61,6 +62,26 @@ const EMPTY_DISPATCH: DispatchSummary = {
 };
 
 /**
+ * Read `KV_KEYS.forceAlert`, and if it names a variant in this pass's snapshots, return that
+ * snapshot and delete the key so the next pass is silent.
+ *
+ * Costs one KV read per pass (against a 100k/day budget) and a delete only when the flag was
+ * actually set, so the write budget documented in `state.ts` is unaffected.
+ */
+async function consumeForceAlert(
+  kv: KVStore,
+  snapshots: StockSnapshot[],
+): Promise<StockSnapshot | null> {
+  const wanted = await kv.get(KV_KEYS.forceAlert);
+  if (wanted === null || wanted.trim() === '') return null;
+  // Always clear, even when the id matches nothing: a flag naming a variant that no longer
+  // exists would otherwise re-read on every pass forever.
+  await kv.delete(KV_KEYS.forceAlert);
+  const match = snapshots.find((s) => s.variantId === wanted.trim());
+  return match ?? null;
+}
+
+/**
  * One cron pass: detect, latch, notify.
  *
  * INVARIANT 1 lives in the early return below. When detection fails we touch the failure counter
@@ -111,6 +132,15 @@ export async function runPass(deps: PassDeps): Promise<PassSummary> {
   }
 
   const { alerts } = await applySnapshots(deps.kv, result.snapshots, deps.now);
+
+  // One-shot test trigger. Reached only on a SUCCESSFUL pass, so invariant 1 is untouched: a
+  // failing detect still returns above without consuming the flag, and a debug path must not be
+  // the thing that weakens the guarantee the rest of this file is built around.
+  //
+  // Deliberately bypasses both the latch and the cooldown -- firing unconditionally is the whole
+  // point. It exists because nothing else can prove delivery while the product is sold out.
+  const forced = await consumeForceAlert(deps.kv, result.snapshots);
+  if (forced !== null) alerts.push(forced);
   await cacheSnapshots(deps.kv, result.snapshots, deps.now);
   const { recoveryNoticeDue } = await recordSuccess(deps.kv, result.adapter, deps.now);
 
