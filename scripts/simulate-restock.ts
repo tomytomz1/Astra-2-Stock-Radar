@@ -1,5 +1,6 @@
 /**
  * pnpm simulate-restock <variantId> [--dry-run]
+ * pnpm simulate-restock --heartbeat   force the weekly liveness ping on the next pass
  *
  * Forces a real end-to-end test of the push pipeline WITHOUT waiting for the store to actually
  * restock. Without this, the first real test of the whole system is the exact moment it matters
@@ -34,7 +35,7 @@
 
 import { execFileSync } from 'node:child_process';
 
-import { KV_KEYS } from '../packages/contract/src/index.js';
+import { HEARTBEAT_INTERVAL_MS, KV_KEYS } from '../packages/contract/src/index.js';
 import type { VariantState } from '../packages/contract/src/index.js';
 
 /** The one-shot trigger key. Named in the contract so the worker and this script cannot drift. */
@@ -216,6 +217,43 @@ async function listAndExit(): Promise<void> {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
+  const heartbeatOnly = args.includes('--heartbeat');
+
+  if (heartbeatOnly) {
+    // Clearing `lastHeartbeatAt` makes the next successful pass send a liveness ping. Without
+    // this the feature is unverifiable for seven days -- the same "first real test is the moment
+    // it matters" trap the force-alert trigger exists to avoid.
+    log('Clearing lastHeartbeatAt so the next cron pass sends a liveness heartbeat.');
+    log('');
+    const raw = kvGet(KV_KEYS.health);
+    if (raw === null) {
+      log('No health record yet. The worker has not completed a successful pass; try again in a minute.');
+      process.exitCode = 1;
+      return;
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      log(`Health record is not valid JSON, refusing to overwrite it: ${raw.slice(0, 200)}`);
+      process.exitCode = 1;
+      return;
+    }
+    // Back-dated rather than nulled: null starts the clock instead of firing, by design.
+    const next = { ...parsed, lastHeartbeatAt: Date.now() - HEARTBEAT_INTERVAL_MS - 1000 };
+    log(`Will write: ${KV_KEYS.health} with lastHeartbeatAt back-dated past the weekly interval.`);
+    if (dryRun) {
+      log('');
+      log('--dry-run: no write performed.');
+      return;
+    }
+    kvPut(KV_KEYS.health, JSON.stringify(next));
+    log('');
+    log('Done. Within ~60 seconds you should receive a "watcher is running" notification on the');
+    log('watcher-health channel (quieter than a restock alert -- that separation is deliberate).');
+    log('If it does not arrive, no device is registered: open the app once to re-register.');
+    return;
+  }
   const variantId = args.find((a) => !a.startsWith('--'));
 
   if (!variantId) {

@@ -1,4 +1,5 @@
 import {
+  HEARTBEAT_INTERVAL_MS,
   ALERT_COOLDOWN_MS,
   DETECTOR_PAGE_COOLDOWN_MS,
   FAILURE_ALERT_THRESHOLD,
@@ -101,6 +102,11 @@ export interface SuccessResult {
    * this pass ended it. False for a success that merely follows failures nobody was told about.
    */
   recoveryNoticeDue: boolean;
+  /**
+   * True when a liveness heartbeat is owed. Decided here because this function already reads the
+   * health record, so the check costs no extra KV reads.
+   */
+  heartbeatDue: boolean;
 }
 
 /**
@@ -128,10 +134,25 @@ export async function recordSuccess(
   // `?? null`: records written before `lastPagedAt` existed simply do not have the field.
   const recoveryNoticeDue = (previous?.lastPagedAt ?? null) !== null;
 
+  // Same `?? null` treatment: this field postdates the first deployed health records.
+  const lastHeartbeatAt = previous?.lastHeartbeatAt ?? null;
+  // A null value starts the clock rather than firing: a heartbeat on the first pass after every
+  // deploy would be noise, and setup already proves the chain via `simulate-restock`.
+  const heartbeatDue =
+    lastHeartbeatAt !== null && now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS;
+
   // No extra writes in the steady state: `recoveryNoticeDue` can only be true when an outage
-  // just ended, and `recovered` is already true in that case.
-  if (previous !== null && !stale && !recovered && !adapterChanged && !recoveryNoticeDue) {
-    return { wrote: false, recoveryNoticeDue: false };
+  // just ended, `recovered` is already true in that case, and `heartbeatDue` is true at most
+  // once a week.
+  if (
+    previous !== null &&
+    !stale &&
+    !recovered &&
+    !adapterChanged &&
+    !recoveryNoticeDue &&
+    !heartbeatDue
+  ) {
+    return { wrote: false, recoveryNoticeDue: false, heartbeatDue: false };
   }
 
   const next: HealthState = {
@@ -140,9 +161,13 @@ export async function recordSuccess(
     lastAdapter: adapter,
     lastReason: null,
     lastPagedAt: null,
+    // Advanced only when one is actually due. Carrying the old value forward on every other
+    // write is what stops the heartbeat re-firing on the very next pass.
+    // Advanced when one fires, and seeded when there is none yet so the week starts counting.
+    lastHeartbeatAt: heartbeatDue || lastHeartbeatAt === null ? now : lastHeartbeatAt,
   };
   await putJson(kv, KV_KEYS.health, next);
-  return { wrote: true, recoveryNoticeDue };
+  return { wrote: true, recoveryNoticeDue, heartbeatDue };
 }
 
 export interface FailureResult {
@@ -194,6 +219,9 @@ export async function recordFailure(
     lastAdapter: previous?.lastAdapter ?? null,
     lastReason: reason.slice(0, 500),
     lastPagedAt: pageDue ? now : lastPagedAt,
+    // Carried forward, never reset: an outage must not schedule a heartbeat for the moment the
+    // store becomes readable again.
+    lastHeartbeatAt: previous?.lastHeartbeatAt ?? null,
   };
   await putJson(kv, KV_KEYS.health, next);
   return { consecutiveFailures, wrote: true, pageDue };

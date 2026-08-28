@@ -9,6 +9,7 @@ import {
 } from '@astra/contract';
 import type {
   DetectorPushData,
+  HeartbeatPushData,
   PushData,
   RegisteredDevice,
   RestockPushData,
@@ -178,6 +179,69 @@ export interface DetectorDispatchOptions extends Transport {
   consecutiveFailures: number;
   /** Last failure reason; null on recovery. Truncated before it reaches the payload. */
   reason: string | null;
+}
+
+export interface HeartbeatDispatchOptions extends Transport {
+  now: number;
+  /** Variants being watched, for the evidence in the body. */
+  variantCount: number;
+  /** Epoch ms of the last successful store read. */
+  lastSuccessAt: number;
+}
+
+/**
+ * Build one heartbeat per registered device.
+ *
+ * Rides the DETECTOR channel at normal priority and is never Time Sensitive. A weekly "still
+ * working" ping on the restock channel would train the reader to swipe away the one sound that
+ * matters; the two-channel split exists precisely so this can be muted on its own.
+ */
+export function buildHeartbeatMessages(
+  devices: RegisteredDevice[],
+  variantCount: number,
+  lastSuccessAt: number,
+  now: number,
+): ExpoMessage<HeartbeatPushData>[] {
+  const data: HeartbeatPushData = { kind: 'heartbeat', variantCount, lastSuccessAt };
+  const body = heartbeatBody(variantCount, lastSuccessAt, now);
+  return devices.map((device) => ({
+    to: device.token,
+    title: `${SHORT_PRODUCT_NAME} watcher is running`,
+    body,
+    data,
+    sound: null,
+    priority: 'normal',
+    channelId: ANDROID_CHANNEL_DETECTOR,
+    // Worthless once the next one is due; never let Expo hold it that long.
+    ttl: 24 * 3600,
+  }));
+}
+
+/**
+ * Evidence, not reassurance. "Everything is fine" would be equally true of a system that had
+ * stopped reading the store an hour ago; a variant count and a real timestamp are checkable.
+ */
+export function heartbeatBody(variantCount: number, lastSuccessAt: number, now: number): string {
+  const ageSeconds = Math.max(0, Math.round((now - lastSuccessAt) / 1000));
+  const age =
+    ageSeconds < 90 ? `${ageSeconds}s ago` : `${Math.round(ageSeconds / 60)} min ago`;
+  const variants = `${variantCount} variant${variantCount === 1 ? '' : 's'}`;
+  return `Watching ${variants} · store read ${age}. You will be alerted on restock.`;
+}
+
+/** Send one liveness ping to every registered device. Silent when nobody is registered. */
+export async function dispatchHeartbeat(
+  options: HeartbeatDispatchOptions,
+): Promise<DispatchSummary> {
+  const devices = await readRegistry(options.kv);
+  if (devices.length === 0) return emptySummary();
+  const messages = buildHeartbeatMessages(
+    devices,
+    options.variantCount,
+    options.lastSuccessAt,
+    options.now,
+  );
+  return sendMessages(options, messages);
 }
 
 function emptySummary(): DispatchSummary {

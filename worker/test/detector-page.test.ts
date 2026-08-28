@@ -53,6 +53,7 @@ function health(overrides: Partial<HealthState> = {}): HealthState {
     lastAdapter: 'shopify-js',
     lastReason: null,
     lastPagedAt: null,
+    lastHeartbeatAt: null,
     ...overrides,
   };
 }
@@ -304,7 +305,9 @@ describe('detector paging — recovery', () => {
     });
 
     const first = await recordSuccess(kv, 'shopify-js', NOW);
-    expect(first).toEqual({ wrote: true, recoveryNoticeDue: true });
+    // `heartbeatDue` is false here because the fixture seeds `lastHeartbeatAt: null`, which
+    // starts the weekly clock rather than firing on the first pass.
+    expect(first).toEqual({ wrote: true, recoveryNoticeDue: true, heartbeatDue: false });
 
     const second = await recordSuccess(kv, 'shopify-js', NOW + MINUTE);
     expect(second.recoveryNoticeDue).toBe(false);
