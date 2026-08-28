@@ -23,7 +23,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -433,6 +433,29 @@ function checkAppBundles(): void {
  * wrangler (it needs Cloudflare credentials, which CI deliberately does not have). A static scan
  * of the invocation sites is what is actually checkable, so that is what this does.
  */
+/**
+ * `app.json` / `eas.json` must not exist at the repo root.
+ *
+ * The Expo project is `app/`. When one of these appears at the root it is always residue from an
+ * `eas` command run in the wrong directory -- and its presence is what makes the NEXT one fail
+ * silently: EAS sees a project-shaped root, generates its own `eas.json`, prompts for a bundle
+ * identifier instead of reading `gg.astraradar.app` from `app/app.config.ts`, uploads the wrong
+ * directory, and dies in "Bundle JavaScript" with an unrelated-looking error.
+ *
+ * That has now happened twice, with the README documenting the rule both times. Neither file is
+ * tracked, so this inspects the working tree rather than `git ls-files`.
+ */
+function checkNoRootExpoConfig(): void {
+  const offenders = ['app.json', 'eas.json']
+    .filter((name) => existsSync(join(ROOT, name)))
+    .map(
+      (name) =>
+        `${name} exists at the repo root — delete it. It belongs to app/, and at the root it ` +
+        `makes \`eas\` target the wrong directory. (Run builds via \`pnpm build:ios\`.)`,
+    );
+  record('no stray Expo config at the repo root', offenders.length === 0, offenders);
+}
+
 function checkKvCommandsAreRemote(): void {
   const offenders: string[] = [];
   for (const file of walk(join(ROOT, 'scripts'))) {
@@ -551,6 +574,7 @@ function main(): void {
   checkWindowsSafeCommands();
   checkModulePathsUseFileURLToPath();
   checkAppBundlerResolves();
+  checkNoRootExpoConfig();
   checkKvCommandsAreRemote();
   checkOwnershipIsUnambiguous();
   checkNoSecrets();
