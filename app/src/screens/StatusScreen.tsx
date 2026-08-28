@@ -81,6 +81,8 @@ export function StatusScreen({ status, push, selection, onOpenPicker }: Props) {
         // Defaults to 1, not 0: before the first /status response we simply do not know, and
         // claiming "no device will be alerted" on a loading screen would be a false alarm.
         registeredDevices={status.status?.registeredDevices ?? 1}
+        rateLimitedUntil={status.status?.rateLimitedUntil ?? null}
+        lastReason={status.status?.lastReason ?? null}
       />
 
       {status.error ? (

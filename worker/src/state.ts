@@ -1,9 +1,12 @@
 import {
   HEARTBEAT_INTERVAL_MS,
   ALERT_COOLDOWN_MS,
+  BLIND_PAGE_AFTER_MS,
   DETECTOR_PAGE_COOLDOWN_MS,
   FAILURE_ALERT_THRESHOLD,
   KV_KEYS,
+  RATE_LIMIT_BACKOFF_BASE_MS,
+  RATE_LIMIT_BACKOFF_MAX_MS,
 } from '@astra/contract';
 import type { AdapterName, HealthState, StockSnapshot, VariantState } from '@astra/contract';
 import { getJson, putJson, type KVStore } from './kv';
@@ -141,6 +144,13 @@ export async function recordSuccess(
   const heartbeatDue =
     lastHeartbeatAt !== null && now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS;
 
+  // An outstanding backoff must be cleared even if nothing else changed, or `rateLimitedUntil`
+  // would outlive the condition it describes and suppress polling after the store recovered.
+  // In practice `recovered` already covers this (a throttled pass increments the failure count),
+  // but relying on that coupling would make a future change to either one silently wrong.
+  const backoffToClear =
+    (previous?.rateLimitedUntil ?? null) !== null || (previous?.rateLimitStreak ?? 0) !== 0;
+
   // No extra writes in the steady state: `recoveryNoticeDue` can only be true when an outage
   // just ended, `recovered` is already true in that case, and `heartbeatDue` is true at most
   // once a week.
@@ -150,7 +160,8 @@ export async function recordSuccess(
     !recovered &&
     !adapterChanged &&
     !recoveryNoticeDue &&
-    !heartbeatDue
+    !heartbeatDue &&
+    !backoffToClear
   ) {
     return { wrote: false, recoveryNoticeDue: false, heartbeatDue: false };
   }
@@ -161,6 +172,11 @@ export async function recordSuccess(
     lastAdapter: adapter,
     lastReason: null,
     lastPagedAt: null,
+    // A successful read is the only thing that clears the backoff. Both reset together: the
+    // streak drives the exponential, so leaving it set would make the next isolated 429 wait as
+    // long as the last one in a long-past storm.
+    rateLimitedUntil: null,
+    rateLimitStreak: 0,
     // Advanced only when one is actually due. Carrying the old value forward on every other
     // write is what stops the heartbeat re-firing on the very next pass.
     // Advanced when one fires, and seeded when there is none yet so the week starts counting.
@@ -222,9 +238,133 @@ export async function recordFailure(
     // Carried forward, never reset: an outage must not schedule a heartbeat for the moment the
     // store becomes readable again.
     lastHeartbeatAt: previous?.lastHeartbeatAt ?? null,
+    // Carried forward for the same reason: an ordinary failure during a backoff window must not
+    // silently cancel it and let the retry storm resume.
+    rateLimitedUntil: previous?.rateLimitedUntil ?? null,
+    rateLimitStreak: previous?.rateLimitStreak ?? 0,
   };
   await putJson(kv, KV_KEYS.health, next);
   return { consecutiveFailures, wrote: true, pageDue };
+}
+
+/**
+ * Wall-clock blindness check, shared by every path that can page.
+ *
+ * `FAILURE_ALERT_THRESHOLD` counts passes, which stops being a clock once passes are deliberately
+ * skipped for a backoff -- 15 failures could then span hours. This is the backstop that does not
+ * care how we got here.
+ */
+function blindTooLong(previous: HealthState | null, now: number): boolean {
+  const lastSuccessAt = previous?.lastSuccessAt ?? null;
+  // Never having succeeded is a fresh deployment, not an outage: there is no interval to measure
+  // and paging about it would fire on every new worker before its first pass lands.
+  if (lastSuccessAt === null) return false;
+  return now - lastSuccessAt >= BLIND_PAGE_AFTER_MS;
+}
+
+function pageAllowed(previous: HealthState | null, now: number): boolean {
+  const lastPagedAt = previous?.lastPagedAt ?? null;
+  return lastPagedAt === null || now - lastPagedAt >= DETECTOR_PAGE_COOLDOWN_MS;
+}
+
+export interface RateLimitResult {
+  /** Epoch ms until which polling is suspended. */
+  until: number;
+  /** Consecutive rate-limited passes including this one. */
+  streak: number;
+  consecutiveFailures: number;
+  pageDue: boolean;
+}
+
+/**
+ * Record a pass that was throttled by the origin, and decide how long to stay quiet.
+ *
+ * Always writes: the backoff is the entire point of the pass, and there is at most one write per
+ * backoff window (the windows that follow are skipped without touching KV), so a storm costs
+ * fewer writes than the failures it replaces rather than more.
+ *
+ * `consecutiveFailures` still climbs, because from the user's point of view a throttled pass is a
+ * pass that did not read the store. Reporting it as healthy would be the "silently blind" state
+ * this project keeps designing against.
+ */
+export async function recordRateLimited(
+  kv: KVStore,
+  reason: string,
+  retryAfterMs: number | null,
+  now: number,
+): Promise<RateLimitResult> {
+  const previous = await readHealth(kv);
+  const streak = (previous?.rateLimitStreak ?? 0) + 1;
+
+  // Exponential on our own streak, unless the origin named a delay -- it knows its window and we
+  // do not. Either way the ceiling applies: the store does not get to decide how long this
+  // system stays blind.
+  const backoff =
+    retryAfterMs !== null
+      ? Math.min(retryAfterMs, RATE_LIMIT_BACKOFF_MAX_MS)
+      : Math.min(RATE_LIMIT_BACKOFF_BASE_MS * 2 ** (streak - 1), RATE_LIMIT_BACKOFF_MAX_MS);
+  const until = now + backoff;
+
+  const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
+  // Being throttled briefly is normal and not worth waking anyone. Being unable to read the store
+  // for `BLIND_PAGE_AFTER_MS` is worth waking someone whatever the cause, so this pages on the
+  // wall clock rather than on the pass count the backoff has made meaningless.
+  const pageDue = blindTooLong(previous, now) && pageAllowed(previous, now);
+
+  const next: HealthState = {
+    lastSuccessAt: previous?.lastSuccessAt ?? null,
+    consecutiveFailures,
+    lastAdapter: previous?.lastAdapter ?? null,
+    lastReason: reason.slice(0, 500),
+    lastPagedAt: pageDue ? now : (previous?.lastPagedAt ?? null),
+    lastHeartbeatAt: previous?.lastHeartbeatAt ?? null,
+    rateLimitedUntil: until,
+    rateLimitStreak: streak,
+  };
+  await putJson(kv, KV_KEYS.health, next);
+  return { until, streak, consecutiveFailures, pageDue };
+}
+
+export interface BackoffState {
+  /** True when polling is currently suspended and this pass must not touch the store. */
+  active: boolean;
+  until: number | null;
+  consecutiveFailures: number;
+  /** True when blindness has now outlasted `BLIND_PAGE_AFTER_MS` and a page is owed. */
+  pageDue: boolean;
+  reason: string | null;
+}
+
+/**
+ * Decide whether this pass is inside a backoff window, without spending a write.
+ *
+ * The common case -- backoff active, nothing else to do -- performs one KV read and no writes at
+ * all, so a long throttle is cheaper than normal operation rather than more expensive. The single
+ * exception is the page: going quiet must never mean going silent, so if blindness outlasts
+ * `BLIND_PAGE_AFTER_MS` this spends one write to record that we said so.
+ */
+export async function checkBackoff(kv: KVStore, now: number): Promise<BackoffState> {
+  const previous = await readHealth(kv);
+  const until = previous?.rateLimitedUntil ?? null;
+  const consecutiveFailures = previous?.consecutiveFailures ?? 0;
+  if (until === null || now >= until) {
+    return { active: false, until: null, consecutiveFailures, pageDue: false, reason: null };
+  }
+
+  // `blindTooLong` is false whenever `previous` is null, so this branch cannot be reached without
+  // a record to update -- but the narrowing is written out rather than asserted, because a cast
+  // here would spread `null` into a health record the moment that coupling changed.
+  const pageDue = previous !== null && blindTooLong(previous, now) && pageAllowed(previous, now);
+  if (pageDue) {
+    await putJson(kv, KV_KEYS.health, { ...previous, lastPagedAt: now } satisfies HealthState);
+  }
+  return {
+    active: true,
+    until,
+    consecutiveFailures,
+    pageDue,
+    reason: previous?.lastReason ?? null,
+  };
 }
 
 export interface SnapshotCache {

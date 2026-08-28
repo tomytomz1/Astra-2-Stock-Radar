@@ -308,6 +308,93 @@ pnpm simulate-restock --heartbeat
 
 That back-dates `lastHeartbeatAt` so the next cron pass sends one.
 
+## `worker/wrangler.toml` is generated, not committed
+
+The repo ships `worker/wrangler.toml.example` with `REPLACE_WITH_...` placeholders.
+`pnpm bootstrap` copies it to `worker/wrangler.toml` on first run and patches in this
+deployment's real Cloudflare KV namespace ids. The generated file is **gitignored**.
+
+It used to be tracked, and that was a mistake in two directions. Every checkout was permanently
+dirty in that one file, so any change to it — a comment tidy-up was enough — made the next
+`git pull` abort with *"your local changes would be overwritten by merge"*. And a tracked file
+holding a real namespace id is one stray `git add -A` away from being public.
+
+**Upgrading from a checkout that still tracks it:** back the file up first, because the incoming
+commit deletes the tracked copy.
+
+```powershell
+copy worker\wrangler.toml worker\wrangler.toml.bak
+git pull
+```
+
+If `worker/wrangler.toml` is gone afterwards, restore the `.bak` or run `pnpm bootstrap`, which
+regenerates it from the template and re-fetches the ids. Nothing here is one-way: the ids are
+always recoverable with `pnpm --filter @astra/worker exec wrangler kv namespace list`.
+
+## Deploying the Worker
+
+```bash
+pnpm deploy:worker
+```
+
+`pnpm bootstrap` also deploys, but it does the whole provisioning dance (namespaces, secrets,
+writing `wrangler.toml`); this is the plain redeploy for a code change.
+
+The script is `deploy:worker` and not `deploy` in **both** manifests because `pnpm deploy` is a
+pnpm builtin — the same trap that made `pnpm setup` unusable and got it renamed to
+`pnpm bootstrap`. A script called `deploy` is unreachable: `pnpm --filter @astra/worker deploy`
+dies with `ERR_PNPM_INVALID_DEPLOY_TARGET` and never reaches wrangler. Preflight checks every
+workspace manifest for this, not just the root one.
+
+## Rate limiting, and the retry storm that caused it
+
+The store enforces a request budget and answers `HTTP 429` when you exceed it. This bit us in
+production, and the cause was the detection chain itself.
+
+Every adapter targets the **same origin** — `…tablet.js`, `…tablet.json`, and the product page —
+so they share one rate-limit bucket. The chain treated any non-OK status as "this adapter failed,
+try the next one", which is right for a 404 (that path is gone, a sibling may work) and exactly
+wrong for a 429. A throttled pass sent three requests where one was already one too many: 180
+requests/hour against a host asking for fewer than 60. The throttle then sustained itself, because
+the harder we were throttled the harder we knocked.
+
+Two changes, both load-bearing:
+
+- **The chain aborts on the first 429.** A 429 describes the host, not the path, so there is
+  nothing to fall back to. One request per pass instead of three.
+- **Polling suspends until the window drains.** `RATE_LIMIT_BACKOFF_BASE_MS` (2 min) doubles per
+  consecutive throttled pass up to `RATE_LIMIT_BACKOFF_MAX_MS` (30 min). `Retry-After` is honoured
+  when the store sends one, capped at the same ceiling — the store does not get to decide how long
+  this system stays blind. A suspended pass makes **zero** requests and **zero** KV writes, so a
+  throttle is cheaper than normal operation. Any successful read clears it.
+
+Going quiet must never mean going silent. `BLIND_PAGE_AFTER_MS` (45 min) is a wall-clock backstop:
+however we got here, three quarters of an hour without a successful store read sends a
+detector-down push. The pass-counting threshold (`FAILURE_ALERT_THRESHOLD`) cannot do this job once
+passes are deliberately skipped — 15 failures could span hours.
+
+The app shows this as its own banner ("Backing off — store asked us to slow down"), distinct from
+"Detector is struggling", because being throttled and complying is not a malfunction.
+
+`GET /status` now also returns `lastReason` and `rateLimitedUntil`. Before that the app could
+report that something was wrong but never what, and diagnosing meant:
+
+```bash
+pnpm --filter @astra/worker exec wrangler kv key get "state:health" --binding STOCK_KV --preview false --text
+```
+
+That command still works and shows the full record, including the backoff fields — but note
+`--remote`:
+
+```bash
+pnpm --filter @astra/worker exec wrangler kv key get "state:health" --binding STOCK_KV --preview false --remote --text
+```
+
+**Wrangler 4 defaults `kv key` commands to local storage.** Without `--remote` the command does
+not error — it answers `Value not found` for a key that plainly exists, having read an empty local
+simulator and never contacted Cloudflare. `kv key put` is worse: it reports success. `pnpm
+simulate-restock` adds the flag itself, and preflight checks that it still does.
+
 ## Known limitation: the registration gap
 
 Between step 3 (the Worker goes live) and step 6 (the app is installed and has registered a push

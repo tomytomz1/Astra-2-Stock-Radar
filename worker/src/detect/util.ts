@@ -1,4 +1,5 @@
-import type { FetchInit, FetchLike, FetchResponse } from './types';
+import { HTTP_TOO_MANY_REQUESTS, RATE_LIMIT_BACKOFF_MAX_MS } from '@astra/contract';
+import type { AdapterResult, FetchInit, FetchLike, FetchResponse } from './types';
 
 /** Storefronts routinely 403 obvious bots. Present as a normal desktop browser. */
 export const USER_AGENT =
@@ -32,6 +33,56 @@ export function browserHeaders(accept: string): Record<string, string> {
     'accept-language': 'en-US,en;q=0.9',
     'cache-control': 'no-cache',
   };
+}
+
+/**
+ * Recognise a throttled response, so the chain can tell "this endpoint is wrong" from "this host
+ * wants less traffic".
+ *
+ * Returns null for every other status, including other failures — the caller keeps its existing
+ * `HTTP <status>` handling for those. Every adapter calls this before its own `!res.ok` branch.
+ */
+export function rateLimitedFailure(
+  res: FetchResponse,
+  url: string,
+): Extract<AdapterResult, { ok: false }> | null {
+  if (res.status !== HTTP_TOO_MANY_REQUESTS) return null;
+  return {
+    ok: false,
+    reason: `HTTP ${HTTP_TOO_MANY_REQUESTS} from ${url}`,
+    rateLimited: true,
+    retryAfterMs: parseRetryAfter(res),
+  };
+}
+
+/**
+ * `Retry-After` as milliseconds, or null when absent, malformed, or non-positive.
+ *
+ * The header comes in two forms (RFC 9110): delay-seconds, or an HTTP-date. Both appear in the
+ * wild, so both are handled. Capped at `RATE_LIMIT_BACKOFF_MAX_MS` — the value is a request from
+ * a third party, and honouring an arbitrarily long one would hand them control of how long this
+ * system stays blind.
+ */
+export function parseRetryAfter(res: FetchResponse): number | null {
+  const raw = res.headers?.get('retry-after');
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+
+  // delay-seconds. Guard against the fractional/negative values some proxies emit.
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds) || seconds <= 0) return null;
+    return Math.min(seconds * 1000, RATE_LIMIT_BACKOFF_MAX_MS);
+  }
+
+  // HTTP-date. Relative to the response's own clock is not available here, so use ours; a few
+  // seconds of skew is irrelevant against a multi-minute backoff.
+  const at = Date.parse(trimmed);
+  if (Number.isNaN(at)) return null;
+  const delta = at - Date.now();
+  if (delta <= 0) return null;
+  return Math.min(delta, RATE_LIMIT_BACKOFF_MAX_MS);
 }
 
 export function errorMessage(err: unknown): string {

@@ -35,13 +35,20 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { copyFile, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, '..');
 const WRANGLER_TOML_PATH = join(REPO_ROOT, 'worker', 'wrangler.toml');
+/**
+ * The committed template. `wrangler.toml` itself is gitignored because this script rewrites it
+ * with real Cloudflare namespace ids -- tracking a file every checkout is expected to modify made
+ * `git pull` abort on any edit to it, and put a real id one `git add -A` away from being public.
+ */
+const WRANGLER_TOML_TEMPLATE_PATH = join(REPO_ROOT, 'worker', 'wrangler.toml.example');
 const EAS_JSON_PATH = join(REPO_ROOT, 'app', 'eas.json');
 
 // Must match the `binding` name in worker/wrangler.toml's [[kv_namespaces]] entry (mirrors the
@@ -222,8 +229,36 @@ interface WranglerTomlState {
   workerName: string | null;
 }
 
+/**
+ * Create `wrangler.toml` from the template when it does not exist yet.
+ *
+ * Returns whether it created one, so the summary can say so. Never overwrites: an existing file
+ * holds this deployment's real ids, and clobbering it would be the single most destructive thing
+ * this script could do.
+ */
+async function ensureWranglerToml(dryRun: boolean): Promise<boolean> {
+  if (existsSync(WRANGLER_TOML_PATH)) return false;
+  if (!existsSync(WRANGLER_TOML_TEMPLATE_PATH)) {
+    throw new Error(
+      `Neither worker/wrangler.toml nor worker/wrangler.toml.example exists. The template is ` +
+        `committed, so this usually means an incomplete checkout -- try \`git checkout ` +
+        `worker/wrangler.toml.example\`.`,
+    );
+  }
+  if (dryRun) {
+    log('worker/wrangler.toml does not exist. Would create it from worker/wrangler.toml.example.');
+    return true;
+  }
+  await copyFile(WRANGLER_TOML_TEMPLATE_PATH, WRANGLER_TOML_PATH);
+  log('Created worker/wrangler.toml from worker/wrangler.toml.example.');
+  return true;
+}
+
 async function readWranglerToml(): Promise<WranglerTomlState> {
-  const raw = await readFile(WRANGLER_TOML_PATH, 'utf8');
+  // Falls back to the template so `--dry-run` can plan against a checkout that has no
+  // wrangler.toml yet -- dry-run creates nothing, so the real file may legitimately be absent.
+  const source = existsSync(WRANGLER_TOML_PATH) ? WRANGLER_TOML_PATH : WRANGLER_TOML_TEMPLATE_PATH;
+  const raw = await readFile(source, 'utf8');
   const nameMatch = raw.match(/^name\s*=\s*"([^"]+)"/m);
   const idMatch = raw.match(/^id = "([^"]*)"$/m);
   const previewMatch = raw.match(/^preview_id = "([^"]*)"$/m);
@@ -242,6 +277,23 @@ interface KvNamespaceListEntry {
   title: string;
 }
 
+/**
+ * Parse a JSON array out of wrangler's stdout.
+ *
+ * `JSON.parse(stdout)` assumed stdout was nothing but JSON. Wrangler 4 breaks that assumption --
+ * it prints a first-run telemetry notice, and update banners appear on any version -- so a
+ * perfectly good response can arrive with prose in front of it. Slicing from the first bracket to
+ * the last is what keeps `kv namespace list` and `kv key list` working across wrangler versions.
+ */
+function parseJsonArray<T>(stdout: string): T[] {
+  const start = stdout.indexOf('[');
+  const end = stdout.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) {
+    throw new SyntaxError('no JSON array found in wrangler output');
+  }
+  return JSON.parse(stdout.slice(start, end + 1)) as T[];
+}
+
 function listKvNamespaces(): KvNamespaceListEntry[] {
   const res = runWrangler(['kv', 'namespace', 'list']);
   if (!res.ok) {
@@ -250,7 +302,7 @@ function listKvNamespaces(): KvNamespaceListEntry[] {
     );
   }
   try {
-    return JSON.parse(res.stdout) as KvNamespaceListEntry[];
+    return parseJsonArray<KvNamespaceListEntry>(res.stdout);
   } catch (err) {
     throw new SetupError(
       `Could not parse \`wrangler kv namespace list\` output as JSON: ${err instanceof Error ? err.message : String(err)}\n\nRaw output:\n${indent(res.stdout)}`,
@@ -521,6 +573,7 @@ async function main(): Promise<void> {
   checkWranglerAuth();
 
   step(2, 'Resolve the KV namespace (idempotent)');
+  await ensureWranglerToml(DRY_RUN);
   const tomlState = await readWranglerToml();
   if (!tomlState.workerName) {
     throw new SetupError(

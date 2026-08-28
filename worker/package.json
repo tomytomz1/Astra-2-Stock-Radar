@@ -7,7 +7,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "deploy": "wrangler deploy",
+    "deploy:worker": "wrangler deploy",
     "dev": "wrangler dev"
   },
   "dependencies": {
@@ -18,6 +18,6 @@
     "@types/node": "^22.10.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8",
-    "wrangler": "^3.99.0"
+    "wrangler": "^4.127.0"
   }
 }

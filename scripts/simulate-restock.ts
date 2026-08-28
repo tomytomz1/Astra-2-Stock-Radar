@@ -64,16 +64,26 @@ interface WranglerResult {
  * node_modules layout.
  */
 /**
- * `wrangler kv` refuses to guess which namespace to touch when wrangler.toml carries both `id`
- * and `preview_id` -- which `pnpm bootstrap` deliberately writes, since `preview_id` is what
- * `wrangler dev` binds. Every `kv` subcommand therefore needs an explicit `--preview false` to
- * target the production namespace the deployed worker actually reads. Non-`kv` subcommands do
- * not accept the flag, so it is added only where it applies.
+ * Flags every `wrangler kv key` call needs to touch the namespace the DEPLOYED worker reads.
+ *
+ * `--preview false`: wrangler refuses to guess which namespace to use when wrangler.toml carries
+ * both `id` and `preview_id` -- which `pnpm bootstrap` deliberately writes, since `preview_id` is
+ * what `wrangler dev` binds.
+ *
+ * `--remote`: wrangler 4 defaults these commands to LOCAL storage. Without it, `kv key get`
+ * against the live namespace answers "Value not found" and `kv key put` reports success, both
+ * having quietly operated on an empty local simulator and never contacted Cloudflare -- which is
+ * far worse than an error, because arming a force-alert would look like it worked and nothing
+ * would ever fire. (Proof it never leaves the machine: without `--remote` the command succeeds
+ * with no credentials configured at all; with it, wrangler demands CLOUDFLARE_API_TOKEN.)
+ *
+ * `kv namespace list/create` do not accept `--remote` -- they are inherently remote -- so both
+ * flags are added only to `kv key`, where they apply.
  */
-function withPreviewFlag(args: string[]): string[] {
-  // `kv key ...` only. `kv namespace create --preview` means something entirely different --
-  // create the preview namespace -- so the flag must not be sprayed across every kv subcommand.
-  return args[0] === 'kv' && args[1] === 'key' ? [...args, '--preview', 'false'] : args;
+function withKvFlags(args: string[]): string[] {
+  return args[0] === 'kv' && args[1] === 'key'
+    ? [...args, '--preview', 'false', '--remote']
+    : args;
 }
 
 /**
@@ -101,7 +111,7 @@ function pnpmCommand(args: string[]): { file: string; args: string[]; shell: boo
 
 function runWrangler(args: string[]): WranglerResult {
   try {
-    const spec = pnpmCommand(['--filter', '@astra/worker', 'exec', 'wrangler', ...withPreviewFlag(args)]);
+    const spec = pnpmCommand(['--filter', '@astra/worker', 'exec', 'wrangler', ...withKvFlags(args)]);
     const stdout = execFileSync(spec.file, spec.args, {
       shell: spec.shell,
       encoding: 'utf8',
@@ -155,13 +165,30 @@ interface KvListEntry {
   name: string;
 }
 
+/**
+ * Parse a JSON array out of wrangler's stdout.
+ *
+ * `JSON.parse(stdout)` assumed stdout was nothing but JSON. Wrangler 4 breaks that assumption --
+ * it prints a first-run telemetry notice, and update banners appear on any version -- so a
+ * perfectly good response can arrive with prose in front of it. Slicing from the first bracket to
+ * the last is what keeps `kv namespace list` and `kv key list` working across wrangler versions.
+ */
+function parseJsonArray<T>(stdout: string): T[] {
+  const start = stdout.indexOf('[');
+  const end = stdout.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) {
+    throw new SyntaxError('no JSON array found in wrangler output');
+  }
+  return JSON.parse(stdout.slice(start, end + 1)) as T[];
+}
+
 function kvListVariantKeys(): string[] {
   const res = runWrangler(['kv', 'key', 'list', '--binding', KV_BINDING, '--prefix', VARIANT_KEY_PREFIX]);
   if (!res.ok) {
     throw new Error(`wrangler kv key list failed (exit ${res.status ?? 'unknown'}): ${res.stderr.trim() || '(no stderr)'}`);
   }
   try {
-    const parsed = JSON.parse(res.stdout) as KvListEntry[];
+    const parsed = parseJsonArray<KvListEntry>(res.stdout);
     return parsed.map((e) => e.name);
   } catch (err) {
     throw new Error(`could not parse \`wrangler kv key list\` output as JSON: ${err instanceof Error ? err.message : err}`);

@@ -4,13 +4,13 @@
 #   `main = "src/index.ts"` is resolved relative to this file, and the worker's source lives at
 #   worker/src/index.ts -- so wrangler.toml has to sit in worker/ for that relative path to be
 #   right. It also has to be discoverable by plain `wrangler <command>` run with worker/ as the
-#   working directory, which is exactly what `pnpm --filter @astra/worker deploy` (= root's
+#   working directory, which is exactly what `pnpm --filter @astra/worker deploy:worker` (= root's
 #   `pnpm deploy:worker`) and `pnpm --filter @astra/worker exec wrangler ...` both do -- wrangler
 #   walks up from cwd looking for a config file, finds this one, and never needs a `--config`
 #   flag. A root-level wrangler.toml would need `main` rewritten to `worker/src/index.ts` and
 #   every wrangler invocation would need `--cwd worker` or `--config wrangler.toml`; keeping it
 #   next to the code it configures is simpler and matches how the `@astra/worker` package.json
-#   already assumes it ("deploy": "wrangler deploy", run from worker/).
+#   already assumes it ("deploy:worker": "wrangler deploy", run from worker/).
 #
 # The KV namespace id below is deployment-specific -- see the README credential checklist for how
 # to create the namespace and fill it in. Never commit a real id; REPLACE_WITH_... placeholders

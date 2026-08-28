@@ -7,6 +7,7 @@ import {
   errorMessage,
   fetchWithTimeout,
   parsePriceToCents,
+  rateLimitedFailure,
   readBoolean,
   readNumber,
   readString,
@@ -34,6 +35,9 @@ export const shopifyJsonAdapter: Adapter = {
         { method: 'GET', headers: browserHeaders('application/json,*/*;q=0.1') },
         ctx.timeoutMs,
       );
+      // A 429 is about the host, not this path: sibling endpoints share the bucket.
+      const throttled = rateLimitedFailure(res, url);
+      if (throttled !== null) return throttled;
       if (!res.ok) return { ok: false, reason: `HTTP ${res.status} from ${url}` };
       payload = await res.json();
     } catch (err) {

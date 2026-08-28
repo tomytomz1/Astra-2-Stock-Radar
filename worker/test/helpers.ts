@@ -125,6 +125,27 @@ export function errorResponse(status: number): FetchResponse {
   };
 }
 
+/**
+ * A throttled response, optionally carrying `Retry-After`.
+ *
+ * Real 429s come with headers; `errorResponse` deliberately has none, so a test that wants to
+ * exercise the header path has to say so explicitly.
+ */
+export function rateLimitedResponse(retryAfter?: string): FetchResponse {
+  return {
+    ok: false,
+    status: 429,
+    text: async () => '',
+    json: async () => {
+      throw new Error('HTTP 429');
+    },
+    headers: {
+      get: (name: string) =>
+        name.toLowerCase() === 'retry-after' && retryAfter !== undefined ? retryAfter : null,
+    },
+  };
+}
+
 /** A fetch stub that fails every request — used to prove nothing was sent. */
 export function throwingFetch(): FakeFetch {
   return fakeFetch(() => {

@@ -1,7 +1,7 @@
 import { PRODUCT_TITLE } from '@astra/contract';
 import type { StockSnapshot } from '@astra/contract';
 import type { Adapter, AdapterContext, AdapterResult } from './types';
-import { browserHeaders, errorMessage, fetchWithTimeout } from './util';
+import { browserHeaders, errorMessage, fetchWithTimeout, rateLimitedFailure } from './util';
 
 /**
  * Last-resort HTML pattern matching, driven entirely by `DetectConfig` written by `pnpm probe`.
@@ -39,6 +39,9 @@ export const heuristicAdapter: Adapter = {
         { method: 'GET', headers: browserHeaders('text/html,application/xhtml+xml') },
         ctx.timeoutMs,
       );
+      // A 429 is about the host, not this path: sibling endpoints share the bucket.
+      const throttled = rateLimitedFailure(res, ctx.productUrl);
+      if (throttled !== null) return throttled;
       if (!res.ok) return { ok: false, reason: `HTTP ${res.status} from ${ctx.productUrl}` };
       html = await res.text();
     } catch (err) {
