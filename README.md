@@ -103,7 +103,7 @@ longer one.
 |---|------|---------|------|
 | 1 | Install dependencies (from the repo root) | `pnpm install` | ~1 min |
 | 1a | Install the EAS CLI | `npm install -g eas-cli` | ~1 min |
-| 1b | Link the Expo project — **run from `app/`** | `cd app`, `eas login`, `eas init` | ~2 min |
+| 1b | Link the Expo project — **run from `app/`** | `cd app`, `eas login`, `eas init` (the id is already committed; see below) | ~2 min |
 | 2 | Start the app build — **from `app/`** — then move straight to step 3 while it queues | `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
 | 3 | Provision Cloudflare and deploy the Worker — do this while step 2 builds | `pnpm bootstrap` | ~2–5 min |
 | 4 | Add secrets (optional, see below) | none strictly required | — |
@@ -130,13 +130,17 @@ eas login
 eas init
 ```
 
-`eas init` writes the project id into `app/app.json`. That file is picked up automatically —
-`app.config.ts` receives it as the static config and spreads it through (`...config.extra`),
-with `config.extra?.eas?.projectId` as the resolved fallback. So no environment variable is
-normally needed. Commit `app/app.json`; the id is a public project identifier, not a secret.
+`eas init` **cannot** write the project id into this repo: `app.config.ts` is a dynamic config,
+and the CLI refuses to edit one — it prints the id, tells you to set `extra.eas.projectId`
+yourself, and exits with an error. Linking still succeeds; only the write fails.
 
-`EAS_PROJECT_ID` remains as an override for the case where `app.json` is absent or you want to
-build against a different project:
+The id is therefore committed directly in `app/app.config.ts`. That is deliberate and it is not
+a secret — it is a public project identifier. It must live in the file rather than an
+environment variable because **`eas build` runs in the cloud**, where a locally-exported
+`EAS_PROJECT_ID` does not exist; a config depending on one would produce an app that builds
+cleanly and then cannot register for push.
+
+`EAS_PROJECT_ID` still works as an override for building against a different project:
 
 ```bash
 # macOS / Linux

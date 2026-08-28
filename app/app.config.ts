@@ -15,8 +15,22 @@ export default ({ config }: ConfigContext): ExpoConfig => {
    * and the two must not be allowed to disagree. `eas init` / `eas update:configure` cannot
    * write into a dynamic config, so both are wired by hand from this one value.
    */
+  /**
+   * The EAS project id, committed deliberately. It is a public identifier, not a secret.
+   *
+   * It has to live here rather than in an env var: `eas build` runs in the cloud, where a
+   * locally-exported `EAS_PROJECT_ID` does not exist, so a config that depended on one would
+   * produce an app that builds cleanly and then cannot register for push — the precise silent
+   * failure this project exists to avoid. `eas init` cannot write it for us either; it refuses
+   * to edit a dynamic config and exits with an error.
+   *
+   * The env var and static-config paths remain as overrides for building against a different
+   * project.
+   */
   const easProjectId: string | undefined =
-    process.env.EAS_PROJECT_ID ?? (config.extra?.eas?.projectId as string | undefined);
+    process.env.EAS_PROJECT_ID ??
+    (config.extra?.eas?.projectId as string | undefined) ??
+    '0d287b59-d5ea-49f2-8df5-39ac6c12497e';
 
   return {
   ...config,
