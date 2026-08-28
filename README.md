@@ -308,6 +308,21 @@ pnpm simulate-restock --heartbeat
 
 That back-dates `lastHeartbeatAt` so the next cron pass sends one.
 
+## Deploying the Worker
+
+```bash
+pnpm deploy:worker
+```
+
+`pnpm bootstrap` also deploys, but it does the whole provisioning dance (namespaces, secrets,
+writing `wrangler.toml`); this is the plain redeploy for a code change.
+
+The script is `deploy:worker` and not `deploy` in **both** manifests because `pnpm deploy` is a
+pnpm builtin — the same trap that made `pnpm setup` unusable and got it renamed to
+`pnpm bootstrap`. A script called `deploy` is unreachable: `pnpm --filter @astra/worker deploy`
+dies with `ERR_PNPM_INVALID_DEPLOY_TARGET` and never reaches wrangler. Preflight checks every
+workspace manifest for this, not just the root one.
+
 ## Rate limiting, and the retry storm that caused it
 
 The store enforces a request budget and answers `HTTP 429` when you exceed it. This bit us in

@@ -116,6 +116,11 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+/** Every file git tracks. Used by the ownership check and the shadowed-script check. */
+function gitFiles(): string[] {
+  return run('git', ['ls-files']).output.split('\n').filter((f) => f.trim() !== '');
+}
+
 /** Strip line and block comments so a value merely *mentioned* in prose is not a violation. */
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
@@ -195,13 +200,33 @@ const PNPM_BUILTINS = new Set([
 ]);
 const LIFECYCLE_ALIASES = new Set(['test', 'start', 'stop', 'restart']);
 
+/**
+ * EVERY package.json in the workspace, not just the root one.
+ *
+ * This check was root-only and therefore missed `worker`'s `deploy` script, which pnpm's builtin
+ * `pnpm deploy` shadows -- `pnpm --filter @astra/worker deploy` dies with
+ * ERR_PNPM_INVALID_DEPLOY_TARGET and never reaches wrangler. A gate that inspects one of four
+ * manifests reports "no script is shadowed" while one is, which is worse than not checking: it
+ * is a green light for a thing that does not work.
+ */
+function workspaceManifests(): string[] {
+  const tracked = gitFiles().filter((f) => f === 'package.json' || f.endsWith('/package.json'));
+  return tracked.filter((f) => !f.includes('node_modules/'));
+}
+
 function checkNoShadowedScriptNames(): void {
-  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
-    scripts?: Record<string, string>;
-  };
-  const shadowed = Object.keys(pkg.scripts ?? {})
-    .filter((name) => PNPM_BUILTINS.has(name) && !LIFECYCLE_ALIASES.has(name))
-    .map((name) => `script "${name}" is shadowed by pnpm's builtin \`pnpm ${name}\` — rename it`);
+  const shadowed: string[] = [];
+  for (const manifest of workspaceManifests()) {
+    const pkg = JSON.parse(readFileSync(join(ROOT, manifest), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    for (const name of Object.keys(pkg.scripts ?? {})) {
+      if (!PNPM_BUILTINS.has(name) || LIFECYCLE_ALIASES.has(name)) continue;
+      shadowed.push(
+        `${manifest}: script "${name}" is shadowed by pnpm's builtin \`pnpm ${name}\` — rename it`,
+      );
+    }
+  }
   record('no package.json script is shadowed by a pnpm builtin', shadowed.length === 0, shadowed);
 }
 
@@ -419,7 +444,7 @@ function checkOwnershipIsUnambiguous(): void {
     }
   }
 
-  const tracked = run('git', ['ls-files']).output.split('\n').filter((f) => f.trim() !== '');
+  const tracked = gitFiles();
 
   const unowned: string[] = [];
   const contested: string[] = [];
