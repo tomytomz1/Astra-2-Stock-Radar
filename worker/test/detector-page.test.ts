@@ -54,6 +54,8 @@ function health(overrides: Partial<HealthState> = {}): HealthState {
     lastReason: null,
     lastPagedAt: null,
     lastHeartbeatAt: null,
+    rateLimitedUntil: null,
+    rateLimitStreak: 0,
     ...overrides,
   };
 }

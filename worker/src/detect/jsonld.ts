@@ -7,6 +7,7 @@ import {
   errorMessage,
   fetchWithTimeout,
   parsePriceToCents,
+  rateLimitedFailure,
   readString,
 } from './util';
 
@@ -39,6 +40,9 @@ export const jsonLdAdapter: Adapter = {
         { method: 'GET', headers: browserHeaders('text/html,application/xhtml+xml') },
         ctx.timeoutMs,
       );
+      // A 429 is about the host, not this path: sibling endpoints share the bucket.
+      const throttled = rateLimitedFailure(res, ctx.productUrl);
+      if (throttled !== null) return throttled;
       if (!res.ok) return { ok: false, reason: `HTTP ${res.status} from ${ctx.productUrl}` };
       html = await res.text();
     } catch (err) {

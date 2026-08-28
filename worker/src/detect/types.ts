@@ -21,6 +21,11 @@ export interface FetchResponse {
   status: number;
   text(): Promise<string>;
   json(): Promise<unknown>;
+  /**
+   * Optional so the plain objects tests inject stay valid. Only `Retry-After` is read, and its
+   * absence is already a legitimate answer, so nothing depends on this being present.
+   */
+  headers?: { get(name: string): string | null } | undefined;
 }
 
 /** Everything an adapter needs to do its job. */
@@ -42,7 +47,18 @@ export interface AdapterContext {
  */
 export type AdapterResult =
   | { ok: true; snapshots: StockSnapshot[] }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      reason: string;
+      /**
+       * The ORIGIN throttled us, as opposed to this particular endpoint being wrong or gone.
+       * The chain treats the two oppositely: a 404 means try the sibling path, a 429 means stop
+       * touching this host entirely.
+       */
+      rateLimited?: boolean;
+      /** Parsed `Retry-After`, in ms. Null when the origin did not say. */
+      retryAfterMs?: number | null;
+    };
 
 export interface Adapter {
   name: AdapterName;

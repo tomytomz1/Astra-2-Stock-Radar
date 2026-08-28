@@ -308,6 +308,45 @@ pnpm simulate-restock --heartbeat
 
 That back-dates `lastHeartbeatAt` so the next cron pass sends one.
 
+## Rate limiting, and the retry storm that caused it
+
+The store enforces a request budget and answers `HTTP 429` when you exceed it. This bit us in
+production, and the cause was the detection chain itself.
+
+Every adapter targets the **same origin** — `…tablet.js`, `…tablet.json`, and the product page —
+so they share one rate-limit bucket. The chain treated any non-OK status as "this adapter failed,
+try the next one", which is right for a 404 (that path is gone, a sibling may work) and exactly
+wrong for a 429. A throttled pass sent three requests where one was already one too many: 180
+requests/hour against a host asking for fewer than 60. The throttle then sustained itself, because
+the harder we were throttled the harder we knocked.
+
+Two changes, both load-bearing:
+
+- **The chain aborts on the first 429.** A 429 describes the host, not the path, so there is
+  nothing to fall back to. One request per pass instead of three.
+- **Polling suspends until the window drains.** `RATE_LIMIT_BACKOFF_BASE_MS` (2 min) doubles per
+  consecutive throttled pass up to `RATE_LIMIT_BACKOFF_MAX_MS` (30 min). `Retry-After` is honoured
+  when the store sends one, capped at the same ceiling — the store does not get to decide how long
+  this system stays blind. A suspended pass makes **zero** requests and **zero** KV writes, so a
+  throttle is cheaper than normal operation. Any successful read clears it.
+
+Going quiet must never mean going silent. `BLIND_PAGE_AFTER_MS` (45 min) is a wall-clock backstop:
+however we got here, three quarters of an hour without a successful store read sends a
+detector-down push. The pass-counting threshold (`FAILURE_ALERT_THRESHOLD`) cannot do this job once
+passes are deliberately skipped — 15 failures could span hours.
+
+The app shows this as its own banner ("Backing off — store asked us to slow down"), distinct from
+"Detector is struggling", because being throttled and complying is not a malfunction.
+
+`GET /status` now also returns `lastReason` and `rateLimitedUntil`. Before that the app could
+report that something was wrong but never what, and diagnosing meant:
+
+```bash
+pnpm --filter @astra/worker exec wrangler kv key get "state:health" --binding STOCK_KV --preview false --text
+```
+
+That command still works and shows the full record, including the backoff fields.
+
 ## Known limitation: the registration gap
 
 Between step 3 (the Worker goes live) and step 6 (the app is installed and has registered a push

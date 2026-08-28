@@ -22,9 +22,11 @@ import { isValidExpoToken, readRegistry, registerDevice, unregisterDevice } from
 import {
   applySnapshots,
   cacheSnapshots,
+  checkBackoff,
   readHealth,
   readSnapshotCache,
   recordFailure,
+  recordRateLimited,
   recordSuccess,
 } from './state';
 
@@ -56,6 +58,13 @@ export interface PassSummary {
   detectorPage: DetectorPushData['kind'] | null;
   /** Delivery result of that page. Null when none was sent. */
   detectorDispatch: DispatchSummary | null;
+  /**
+   * Epoch ms until which polling is suspended, when this pass either set or observed a backoff.
+   * Null on an ordinary pass.
+   */
+  rateLimitedUntil: number | null;
+  /** True when this pass made no request at all because a backoff was already in force. */
+  skipped: boolean;
 }
 
 const EMPTY_DISPATCH: DispatchSummary = {
@@ -96,12 +105,83 @@ async function consumeForceAlert(
  */
 export async function runPass(deps: PassDeps): Promise<PassSummary> {
   const productUrl = deps.productUrl ?? PRODUCT_URL;
+
+  // Backing off after a 429 means sending NOTHING, not sending less. One KV read decides it, and
+  // a suspended pass performs no fetch and no write -- so a throttle is cheaper than normal
+  // operation, which is what lets the store's rate-limit window actually drain.
+  const backoff = await checkBackoff(deps.kv, deps.now);
+  if (backoff.active) {
+    const reason =
+      `rate limited; polling suspended until ${new Date(backoff.until ?? deps.now).toISOString()}` +
+      (backoff.reason === null ? '' : ` (${backoff.reason})`);
+    // Quiet is not the same as silent. If blindness has outlasted BLIND_PAGE_AFTER_MS, this pass
+    // still pages -- otherwise a long throttle would look exactly like a healthy sold-out store.
+    const detectorDispatch = backoff.pageDue
+      ? await dispatchDetectorPage({
+          kv: deps.kv,
+          fetchImpl: deps.fetchImpl,
+          now: deps.now,
+          accessToken: deps.accessToken,
+          kind: 'detector-down',
+          consecutiveFailures: backoff.consecutiveFailures,
+          reason,
+        })
+      : null;
+    return {
+      ok: false,
+      adapter: null,
+      reason,
+      alerts: 0,
+      dispatch: null,
+      detectorPage: backoff.pageDue ? 'detector-down' : null,
+      detectorDispatch,
+      rateLimitedUntil: backoff.until,
+      skipped: true,
+    };
+  }
+
   const result = await detect({
     productUrl,
     config: deps.config ?? detectConfig,
     fetchImpl: deps.fetchImpl,
     now: deps.now,
   });
+
+  if (!result.ok && result.rateLimited === true) {
+    // Still invariant 1: no variant state, no snapshot cache, no restock push. The only
+    // difference from an ordinary failure is that we now also stop knocking for a while.
+    const { until, consecutiveFailures, pageDue } = await recordRateLimited(
+      deps.kv,
+      result.reason,
+      result.retryAfterMs ?? null,
+      deps.now,
+    );
+    console.warn(
+      `[astra] rate limited by store; suspending polls until ${new Date(until).toISOString()}`,
+    );
+    const detectorDispatch = pageDue
+      ? await dispatchDetectorPage({
+          kv: deps.kv,
+          fetchImpl: deps.fetchImpl,
+          now: deps.now,
+          accessToken: deps.accessToken,
+          kind: 'detector-down',
+          consecutiveFailures,
+          reason: result.reason,
+        })
+      : null;
+    return {
+      ok: false,
+      adapter: null,
+      reason: result.reason,
+      alerts: 0,
+      dispatch: null,
+      detectorPage: pageDue ? 'detector-down' : null,
+      detectorDispatch,
+      rateLimitedUntil: until,
+      skipped: false,
+    };
+  }
 
   if (!result.ok) {
     const { consecutiveFailures, pageDue } = await recordFailure(deps.kv, result.reason, deps.now);
@@ -133,6 +213,8 @@ export async function runPass(deps: PassDeps): Promise<PassSummary> {
       dispatch: null,
       detectorPage: pageDue ? 'detector-down' : null,
       detectorDispatch,
+      rateLimitedUntil: null,
+      skipped: false,
     };
   }
 
@@ -197,6 +279,8 @@ export async function runPass(deps: PassDeps): Promise<PassSummary> {
     dispatch: dispatchSummary,
     detectorPage: recoveryNoticeDue ? 'detector-recovered' : null,
     detectorDispatch,
+    rateLimitedUntil: null,
+    skipped: false,
   };
 }
 
@@ -285,6 +369,9 @@ export async function handleStatus(kv: KVStore): Promise<StatusResponse> {
     // Zero here means a restock would be detected perfectly and delivered to nobody. Every other
     // field would still read healthy, which is why this one is worth a round trip.
     registeredDevices: devices.length,
+    // Reporting a problem without its cause just sends the reader to wrangler.
+    lastReason: health?.lastReason ?? null,
+    rateLimitedUntil: health?.rateLimitedUntil ?? null,
   };
 }
 

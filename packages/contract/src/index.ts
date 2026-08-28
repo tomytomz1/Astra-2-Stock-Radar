@@ -46,7 +46,20 @@ export interface StockSnapshot {
  */
 export type DetectResult =
   | { ok: true; adapter: AdapterName; snapshots: StockSnapshot[] }
-  | { ok: false; adapter: AdapterName | null; reason: string };
+  | {
+      ok: false;
+      adapter: AdapterName | null;
+      reason: string;
+      /**
+       * The origin answered 429. Deliberately a flag on the EXISTING failure variant rather than
+       * a third top-level case: every caller already branches on `ok`, and invariant 1 depends on
+       * that branch staying exhaustive. A new variant would silently opt consumers out of the
+       * check that keeps a failed read from being recorded as `available: false`.
+       */
+      rateLimited?: boolean;
+      /** Parsed `Retry-After`, in ms. Null when the origin did not say. */
+      retryAfterMs?: number | null;
+    };
 
 /** Detection strategies, in the order the chain attempts them. First success wins. */
 export const ADAPTER_ORDER = [
@@ -106,6 +119,23 @@ export interface StatusResponse {
    * here, which is exactly why it is reported.
    */
   registeredDevices: number;
+  /**
+   * Why the last pass failed, truncated. Null when the last pass succeeded.
+   *
+   * The worker has always stored this and put it in the detector-down push, but never exposed it
+   * here — so the app could report that something was wrong and never what, and diagnosing it
+   * meant reading KV by hand with wrangler. A status screen that raises an alarm it cannot
+   * explain just sends you somewhere else to find out.
+   */
+  lastReason: string | null;
+  /**
+   * Epoch ms until which the worker is deliberately not polling, after the store answered 429.
+   * Null when not backing off.
+   *
+   * A distinct state from failure: the store is reachable, it has asked us to knock less often,
+   * and we are complying. Rendering that as "detector struggling" would be alarming and wrong.
+   */
+  rateLimitedUntil: number | null;
 }
 
 /** Shape of the `data` payload attached to every restock push. */
@@ -210,6 +240,38 @@ export const HEARTBEAT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Consecutive detection failures before the detector itself is reported as broken. */
 export const FAILURE_ALERT_THRESHOLD = 15;
 
+/** The status a storefront returns when we are polling harder than it wants. */
+export const HTTP_TOO_MANY_REQUESTS = 429;
+
+/**
+ * First backoff after a 429, doubling per consecutive rate-limited pass up to
+ * `RATE_LIMIT_BACKOFF_MAX_MS`.
+ *
+ * A 429 is not a broken endpoint, it is a request for less traffic, and the only useful reply is
+ * to send none for a while. While the backoff is in force the cron still fires and does nothing:
+ * zero requests to the store, zero KV writes.
+ */
+export const RATE_LIMIT_BACKOFF_BASE_MS = 2 * 60 * 1000;
+
+/**
+ * Ceiling on the backoff, and on any `Retry-After` the origin asks for.
+ *
+ * Half an hour blind is already bad. Honouring an hour-long `Retry-After` verbatim would let the
+ * store decide how long this system stops working, so its request is treated as advice with a
+ * cap rather than an instruction.
+ */
+export const RATE_LIMIT_BACKOFF_MAX_MS = 30 * 60 * 1000;
+
+/**
+ * How long the worker may go without a successful store read before it pages, regardless of why.
+ *
+ * `FAILURE_ALERT_THRESHOLD` counts passes, which stops being a useful clock the moment passes are
+ * deliberately skipped for backoff — 15 failures could then span hours. This is the wall-clock
+ * backstop: however we got here, three quarters of an hour of blindness is worth waking someone,
+ * because silence from this system is otherwise indistinguishable from "not in stock yet".
+ */
+export const BLIND_PAGE_AFTER_MS = 45 * 60 * 1000;
+
 /**
  * How long to stay quiet after paging about a broken detector, in ms.
  *
@@ -263,6 +325,20 @@ export interface HealthState {
    * make the heartbeat re-fire on the next pass.
    */
   lastHeartbeatAt: number | null;
+  /**
+   * Epoch ms until which polling is suspended after a 429, or null when not backing off.
+   *
+   * Lives on the health record for the same reason as `lastHeartbeatAt`: it is already read every
+   * pass, so the check is free. Every code path that writes health MUST carry this forward or the
+   * backoff evaporates on the next write and the retry storm resumes.
+   */
+  rateLimitedUntil: number | null;
+  /**
+   * Consecutive rate-limited passes, driving the exponential backoff. Reset by any successful
+   * read. Separate from `consecutiveFailures` because skipped passes gather no evidence and must
+   * not inflate a counter the user reads as "failed checks".
+   */
+  rateLimitStreak: number;
   /**
    * Epoch ms of the last detector-down page, or null if the current outage has not been paged
    * (or there is no outage). Doubles as the "an outage is open" flag: non-null on a successful

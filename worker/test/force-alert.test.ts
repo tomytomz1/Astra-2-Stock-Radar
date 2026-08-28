@@ -41,6 +41,8 @@ function soldOutWithDevice(): FakeKV {
     lastReason: null,
     lastPagedAt: null,
     lastHeartbeatAt: null,
+    rateLimitedUntil: null,
+    rateLimitStreak: 0,
   };
   return new FakeKV({
     [KV_KEYS.tokenRegistry]: [device('ExponentPushToken[watcher]')],

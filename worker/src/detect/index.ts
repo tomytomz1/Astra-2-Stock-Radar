@@ -58,6 +58,24 @@ export async function detect(options: DetectOptions): Promise<DetectResult> {
     }
     if (result.ok) return { ok: true, adapter: name, snapshots: result.snapshots };
     failures.push(`${name}: ${result.reason}`);
+
+    // Stop the chain dead on a 429. Every adapter targets the SAME origin -- `.js`, `.json` and
+    // the product page share one rate-limit bucket -- so falling through on a throttle sent three
+    // requests where one was already one too many, tripling our rate against the host that just
+    // asked for less. That is a retry storm, and it is what put this system into a 429 loop it
+    // could not leave: the harder we were throttled, the harder we knocked.
+    //
+    // Falling through remains right for a 404 (this path is gone, a sibling may work). It is
+    // exactly wrong for a 429, which is a property of the host rather than the path.
+    if (result.rateLimited === true) {
+      return {
+        ok: false,
+        adapter: null,
+        reason: `${failures.join(' | ')} | chain aborted: origin is rate limiting`,
+        rateLimited: true,
+        retryAfterMs: result.retryAfterMs ?? null,
+      };
+    }
   }
 
   return {
