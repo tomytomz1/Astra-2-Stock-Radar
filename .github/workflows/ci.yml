@@ -1,12 +1,12 @@
 name: CI
 
-# Typecheck and tests only -- deliberately no deploy step, no Cloudflare/Expo credentials, no
-# secrets of any kind. This project's only real deploys (`wrangler deploy`, `eas build`) run from
-# a developer's machine, per the README credential checklist; this workflow exists purely to
-# catch broken types and broken worker logic on every push/PR.
+# Typecheck, tests, a real Metro bundle, and structural checks -- deliberately no deploy step,
+# no Cloudflare/Expo credentials, no secrets of any kind. This project's real deploys
+# (`pnpm bootstrap`, `eas build`) run from a developer's machine, per the README checklist.
 on:
+  # Every branch, not just main. Previously a feature branch with no open PR matched neither
+  # trigger, so eight consecutive commits went unverified without anything saying so.
   push:
-    branches: [main]
   pull_request:
 
 # Cancel superseded runs on the same ref instead of letting them queue.
@@ -47,7 +47,13 @@ jobs:
       - name: Test
         run: pnpm test
 
+      # Metro must actually produce a bundle. Types and tests were green through four failed EAS
+      # builds; only this step reflects whether the app can be built at all.
+      - name: Bundle the app (Metro)
+        run: pnpm --filter @astra/app exec expo export --platform ios --output-dir .ci-export
+
       # Structural checks that typecheck and tests cannot express: no contract value hardcoded,
-      # no script name shadowed by a pnpm builtin, README commands exist, no secrets committed.
+      # no script name shadowed by a pnpm builtin, README commands exist, no credentials
+      # committed, ownership unambiguous, child processes spawned without a shell.
       - name: Preflight structural checks
         run: pnpm preflight --structural-only

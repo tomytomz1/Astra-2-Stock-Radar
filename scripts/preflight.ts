@@ -257,6 +257,7 @@ function checkCiParity(): void {
     /tsc --noEmit -p scripts\/tsconfig\.json/,
     /pnpm test/,
     /pnpm preflight/, // this script; covered by definition
+    /expo export/, // covered by checkAppBundles
   ];
   const runLines = [...workflow.matchAll(/^\s*run:\s*(.+)$/gm)].map((mm) => (mm[1] as string).trim());
   const uncovered = runLines.filter((line) => !covered.some((re) => re.test(line)));
