@@ -102,12 +102,36 @@ longer one.
 | # | Step | Command | Time |
 |---|------|---------|------|
 | 1 | Install dependencies | `pnpm install` | ~1 min |
+| 1b | Link the Expo project and export its id | `npx eas init`, then set `EAS_PROJECT_ID` (see below) | ~2 min |
 | 2 | Start the app build — do this first, then move straight to step 3 while it queues | `npx eas login` then `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
 | 3 | Provision Cloudflare and deploy the Worker — do this while step 2 builds | `pnpm bootstrap` | ~2–5 min |
 | 4 | Add secrets (optional, see below) | none strictly required | — |
 | 5 | Install on your devices | open the install link EAS printed on each device | immediate — no review, no TestFlight processing |
 | 6 | Grant permission, pick variants | in-app | ~1 min |
 | 7 | Prove the pipeline end to end | `pnpm simulate-restock <variantId>` | ~1–2 min (waits for the next cron tick) |
+
+### Step 1b detail — `eas init` and `EAS_PROJECT_ID`
+
+```
+npx expo login
+npx eas init          # prints a project id
+```
+
+`eas init` writes the id into `app.json` for a static config. This project uses a **dynamic**
+config (`app/app.config.ts`), which the EAS CLI reads but never edits — so it prints the id and
+leaves the wiring to you. Set it in the shell you run `eas build` from:
+
+```bash
+# macOS / Linux
+export EAS_PROJECT_ID=<the id eas init printed>
+```
+```powershell
+# Windows PowerShell — `export` is not a PowerShell command and silently does nothing
+$env:EAS_PROJECT_ID = "<the id eas init printed>"
+```
+
+The id is required twice over: `getExpoPushTokenAsync` needs it to mint a push token at all, and
+`updates.url` is derived from it. Without it the app builds but can never register for pushes.
 
 ### Step 2 detail — build
 

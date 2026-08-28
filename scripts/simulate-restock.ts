@@ -59,9 +59,18 @@ interface WranglerResult {
  * the way `pnpm --filter @astra/worker deploy` finds it. Nothing here has to guess at
  * node_modules layout.
  */
+/**
+ * Windows resolves `pnpm`, `npx` and friends to `.cmd` shims, and Node's `execFileSync` does not
+ * apply PATHEXT resolution, so a bare name throws ENOENT there. Suffixing is preferable to
+ * `shell: true`, which would reintroduce quoting and injection concerns for no benefit.
+ */
+function binary(name: string): string {
+  return process.platform === 'win32' ? `${name}.cmd` : name;
+}
+
 function runWrangler(args: string[]): WranglerResult {
   try {
-    const stdout = execFileSync('pnpm', ['--filter', '@astra/worker', 'exec', 'wrangler', ...args], {
+    const stdout = execFileSync(binary('pnpm'), ['--filter', '@astra/worker', 'exec', 'wrangler', ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

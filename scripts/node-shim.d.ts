@@ -18,6 +18,7 @@ declare const process: {
   readonly argv: string[];
   exitCode: number | undefined;
   exit(code?: number): never;
+  readonly platform: string;
   stdout: { write(chunk: string): boolean };
 };
 

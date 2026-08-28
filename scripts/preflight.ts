@@ -50,9 +50,18 @@ function record(name: string, ok: boolean, detail: string[] = []): void {
   if (!ok || VERBOSE) for (const line of detail) process.stdout.write(`          ${line}\n`);
 }
 
+/**
+ * Windows resolves `pnpm`, `npx` and friends to `.cmd` shims, and Node's `execFileSync` does not
+ * apply PATHEXT resolution, so a bare name throws ENOENT there. Suffixing is preferable to
+ * `shell: true`, which would reintroduce quoting and injection concerns for no benefit.
+ */
+function binary(name: string): string {
+  return process.platform === 'win32' ? `${name}.cmd` : name;
+}
+
 function run(cmd: string, args: string[]): { ok: boolean; output: string } {
   try {
-    const output = execFileSync(cmd, args, {
+    const output = execFileSync(binary(cmd), args, {
       cwd: ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -238,6 +247,39 @@ function checkCiParity(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 8b: external commands must resolve on Windows
+// ---------------------------------------------------------------------------
+
+/**
+ * `execFileSync('pnpm', ...)` throws ENOENT on Windows: pnpm, npx and npm are `.cmd` shims
+ * there, and execFile does not apply PATHEXT resolution. Every call site must go through
+ * `binary()`.
+ *
+ * This is invisible from Linux and macOS, where the bare name resolves fine — which is exactly
+ * why it needs a check rather than reviewer attention. All three scripts shipped broken for
+ * Windows before this existed.
+ */
+function checkWindowsSafeCommands(): void {
+  const offenders: string[] = [];
+  // Built by concatenation so this pattern does not match its own source line.
+  const callPattern = new RegExp('execFileSync' + '\\(\\s*([^,]+),', 'g');
+  for (const file of walk(join(ROOT, 'scripts'))) {
+    // `.d.ts` files declare the signature rather than calling it.
+    if (file.endsWith('.d.ts')) continue;
+    const source = stripComments(readFileSync(file, 'utf8'));
+    for (const m of source.matchAll(callPattern)) {
+      const arg = (m[1] as string).trim();
+      if (arg.startsWith('binary(')) continue;
+      // Message deliberately avoids the literal call pattern, or it matches itself.
+      offenders.push(
+        `${relative(ROOT, file)}: bare command \`${arg}\` passed to execFile — wrap it in binary() or it throws ENOENT on Windows`,
+      );
+    }
+  }
+  record('external commands resolve on Windows', offenders.length === 0, offenders);
+}
+
+// ---------------------------------------------------------------------------
 // 9: agent ownership must be unambiguous
 // ---------------------------------------------------------------------------
 
@@ -348,6 +390,7 @@ function main(): void {
   checkNoShadowedScriptNames();
   checkDocumentedCommandsExist();
   checkCiParity();
+  checkWindowsSafeCommands();
   checkOwnershipIsUnambiguous();
   checkNoSecrets();
 

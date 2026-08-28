@@ -101,10 +101,19 @@ interface WranglerResult {
  * devDependencies) and runs it with cwd = worker/, so wrangler.toml is auto-discovered exactly
  * the way `pnpm --filter @astra/worker deploy` and `simulate-restock.ts` both find it.
  */
+/**
+ * Windows resolves `pnpm` to a `.cmd` shim, and Node's `execFileSync` does not apply PATHEXT
+ * resolution, so a bare name throws ENOENT there. Suffixing is preferable to `shell: true`,
+ * which would reintroduce quoting and injection concerns for no benefit.
+ */
+function binary(name: string): string {
+  return process.platform === 'win32' ? `${name}.cmd` : name;
+}
+
 function runWrangler(args: string[], timeoutMs?: number): WranglerResult {
   try {
     const stdout = execFileSync(
-      'pnpm',
+      binary('pnpm'),
       ['--filter', '@astra/worker', 'exec', 'wrangler', ...args],
       {
         encoding: 'utf8',
