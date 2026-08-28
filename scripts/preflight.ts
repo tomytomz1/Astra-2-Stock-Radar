@@ -325,6 +325,35 @@ function checkModulePathsUseFileURLToPath(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 8d: the app's bundler must be resolvable
+// ---------------------------------------------------------------------------
+
+/**
+ * Metro resolves modules by walking node_modules and assumes a flat, hoisted tree. pnpm's
+ * default isolated layout does not provide one, so `metro` and `@expo/metro-config` never get
+ * linked where the app can see them and the build dies during bundling with
+ * "Cannot read properties of undefined (reading 'transformFile')".
+ *
+ * This check exists because every other check in this file passed while the app was structurally
+ * unable to build. Types, tests, ownership and CI parity were all green; the failure only
+ * appeared fifteen minutes into a remote EAS build, twice. Resolution is the cheapest signal
+ * that the bundler could even start.
+ */
+function checkAppBundlerResolves(): void {
+  const missing: string[] = [];
+  for (const mod of ['metro', '@expo/metro-config', 'expo', 'react-native']) {
+    const probe = `require.resolve(${JSON.stringify(mod)}, { paths: [${JSON.stringify(join(ROOT, 'app'))}] })`;
+    const { ok } = run('node', ['-e', probe]);
+    if (!ok) {
+      missing.push(
+        `${mod} does not resolve from app/ — check that .npmrc still sets node-linker=hoisted, then reinstall`,
+      );
+    }
+  }
+  record('app bundler dependencies resolve', missing.length === 0, missing);
+}
+
+// ---------------------------------------------------------------------------
 // 9: agent ownership must be unambiguous
 // ---------------------------------------------------------------------------
 
@@ -437,6 +466,7 @@ function main(): void {
   checkCiParity();
   checkWindowsSafeCommands();
   checkModulePathsUseFileURLToPath();
+  checkAppBundlerResolves();
   checkOwnershipIsUnambiguous();
   checkNoSecrets();
 

@@ -23,6 +23,7 @@
       "owns": [
         "packages/contract/**",
         ".claude/ownership.json",
+        ".npmrc",
         "pnpm-workspace.yaml",
         "tsconfig.base.json",
         "pnpm-lock.yaml",
