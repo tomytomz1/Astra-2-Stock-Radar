@@ -1,4 +1,4 @@
-import type { AdapterName, DetectConfig, StockSnapshot } from '@astra/contract';
+import type { AdapterName, DetectConfig, SourceId, StockSnapshot } from '@astra/contract';
 
 /**
  * Structural subset of `fetch` used by every adapter.
@@ -30,6 +30,8 @@ export interface FetchResponse {
 
 /** Everything an adapter needs to do its job. */
 export interface AdapterContext {
+  /** Which storefront this observation belongs to. Scopes every external identifier it emits. */
+  sourceId: SourceId;
   /** Canonical product URL (no extension). Adapters append `.js` / `.json` as needed. */
   productUrl: string;
   config: DetectConfig;

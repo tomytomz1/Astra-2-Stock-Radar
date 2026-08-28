@@ -1,4 +1,4 @@
-import type { StockSnapshot } from '@astra/contract';
+import type { SourceId, StockSnapshot } from '@astra/contract';
 import type { Adapter, AdapterContext, AdapterResult } from './types';
 import {
   asArray,
@@ -56,7 +56,7 @@ export const shopifyJsAdapter: Adapter = {
 
     const snapshots: StockSnapshot[] = [];
     for (const entry of variants) {
-      const snapshot = parseVariant(entry, currency, ctx.now);
+      const snapshot = parseVariant(entry, currency, ctx.now, ctx.sourceId);
       if (snapshot !== null) snapshots.push(snapshot);
     }
 
@@ -69,7 +69,12 @@ export const shopifyJsAdapter: Adapter = {
   },
 };
 
-function parseVariant(entry: unknown, currency: string | null, now: number): StockSnapshot | null {
+function parseVariant(
+  entry: unknown,
+  currency: string | null,
+  now: number,
+  sourceId: SourceId,
+): StockSnapshot | null {
   const v = asRecord(entry);
   if (v === null) return null;
 
@@ -88,6 +93,10 @@ function parseVariant(entry: unknown, currency: string | null, now: number): Sto
 
   return {
     variantId,
+    // The `.js`/`.json` endpoints return Shopify's own variant id, which is also what the cart
+    // understands -- so here the observed identifier and the purchase alias coincide. They do not
+    // for every adapter, which is exactly why the namespace is recorded rather than assumed.
+    observed: { sourceId, namespace: 'shopify-variant-id', externalId: variantId },
     title,
     available,
     priceCents,

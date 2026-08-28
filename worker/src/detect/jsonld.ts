@@ -1,4 +1,4 @@
-import type { StockSnapshot } from '@astra/contract';
+import type { IdentityNamespace, SourceId, StockSnapshot } from '@astra/contract';
 import type { Adapter, AdapterContext, AdapterResult } from './types';
 import {
   asArray,
@@ -70,7 +70,7 @@ export const jsonLdAdapter: Adapter = {
       const productName = readString(node['name']);
       const offers = expandOffers(node['offers']);
       offers.forEach((offer, index) => {
-        const snapshot = parseOffer(offer, productName, index, ctx.now);
+        const snapshot = parseOffer(offer, productName, index, ctx.now, ctx.sourceId);
         if (snapshot === null || seen.has(snapshot.variantId)) return;
         seen.add(snapshot.variantId);
         snapshots.push(snapshot);
@@ -148,25 +148,59 @@ function expandOffers(value: unknown): Record<string, unknown>[] {
   return out;
 }
 
+/**
+ * Which field yielded the identifier, in the order the chain tries them.
+ *
+ * Only `source-sku` is aliased for REDMAGIC, on primary evidence from the Shopify `.js` endpoint.
+ * `source-mpn` is intentionally NOT aliased: no evidence shows the store populates `mpn` with
+ * those values, and widening an alias because two fields might hold the same-looking value is the
+ * error this whole design exists to prevent. `@id` is an IRI and the slug is fabricated, so both
+ * are `synthetic` and never resolve.
+ */
+function readIdentity(
+  offer: Record<string, unknown>,
+  item: Record<string, unknown> | null,
+  productName: string | null,
+  index: number,
+): { namespace: IdentityNamespace; externalId: string } {
+  const offerSku = readString(offer['sku']);
+  if (offerSku !== null) return { namespace: 'source-sku', externalId: offerSku };
+
+  const mpn = readString(offer['mpn']);
+  if (mpn !== null) return { namespace: 'source-mpn', externalId: mpn };
+
+  const itemSku = item !== null ? readString(item['sku']) : null;
+  if (itemSku !== null) return { namespace: 'source-sku', externalId: itemSku };
+
+  const iri = readString(offer['@id']);
+  if (iri !== null) return { namespace: 'synthetic', externalId: iri };
+
+  return {
+    namespace: 'synthetic',
+    externalId: `${slugify(productName ?? 'product')}-offer-${index}`,
+  };
+}
+
 function parseOffer(
   offer: Record<string, unknown>,
   productName: string | null,
   index: number,
   now: number,
+  sourceId: SourceId,
 ): StockSnapshot | null {
   const availabilityRaw = readAvailability(offer);
   if (availabilityRaw === null) return null;
   const available = PURCHASABLE_AVAILABILITY.has(availabilityRaw);
 
   const item = asRecord(offer['itemOffered']);
-  const sku =
-    readString(offer['sku']) ??
-    readString(offer['mpn']) ??
-    (item !== null ? readString(item['sku']) : null) ??
-    readString(offer['@id']) ??
-    null;
 
-  const variantId = sku ?? `${slugify(productName ?? 'product')}-offer-${index}`;
+  // The namespace records WHICH FIELD supplied the identifier, never a guess at what the value
+  // means. This chain reads five different fields; `sku` and `mpn` are genuinely different
+  // identifier concepts, `@id` is an IRI, and the slug is fabricated. Collapsing them under one
+  // label would assert a semantic no adapter verified -- and only `source-sku` is aliased, so a
+  // value arriving from any other branch resolves to null and is fail-closed by construction.
+  const identity = readIdentity(offer, item, productName, index);
+  const variantId = identity.externalId;
   const title =
     readString(offer['name']) ??
     (item !== null ? readString(item['name']) : null) ??
@@ -181,7 +215,15 @@ function parseOffer(
     readString(offer['priceCurrency']) ??
     (priceSpec !== null ? readString(priceSpec['priceCurrency']) : null);
 
-  return { variantId, title, available, priceCents, currency, checkedAt: now };
+  return {
+    variantId,
+    observed: { sourceId, namespace: identity.namespace, externalId: variantId },
+    title,
+    available,
+    priceCents,
+    currency,
+    checkedAt: now,
+  };
 }
 
 /** `https://schema.org/InStock` | `InStock` | `{"@id": "...InStock"}` -> `instock`. */

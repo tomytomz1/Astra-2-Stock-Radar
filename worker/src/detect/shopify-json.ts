@@ -1,4 +1,4 @@
-import type { StockSnapshot } from '@astra/contract';
+import type { SourceId, StockSnapshot } from '@astra/contract';
 import type { Adapter, AdapterContext, AdapterResult } from './types';
 import {
   asArray,
@@ -60,7 +60,7 @@ export const shopifyJsonAdapter: Adapter = {
 
     const snapshots: StockSnapshot[] = [];
     for (const entry of variants) {
-      const snapshot = parseVariant(entry, currency, ctx.now);
+      const snapshot = parseVariant(entry, currency, ctx.now, ctx.sourceId);
       if (snapshot !== null) snapshots.push(snapshot);
     }
 
@@ -74,7 +74,12 @@ export const shopifyJsonAdapter: Adapter = {
   },
 };
 
-function parseVariant(entry: unknown, currency: string | null, now: number): StockSnapshot | null {
+function parseVariant(
+  entry: unknown,
+  currency: string | null,
+  now: number,
+  sourceId: SourceId,
+): StockSnapshot | null {
   const v = asRecord(entry);
   if (v === null) return null;
 
@@ -88,7 +93,17 @@ function parseVariant(entry: unknown, currency: string | null, now: number): Sto
   // "899.00" -> 89900. Never `parseFloat(...) * 100`.
   const priceCents = parsePriceToCents(v['price']);
 
-  return { variantId, title, available, priceCents, currency, checkedAt: now };
+  // Shopify's own variant id: observed identifier and purchase alias coincide here, but the
+  // namespace is recorded rather than assumed because that is not true of every adapter.
+  return {
+    variantId,
+    observed: { sourceId, namespace: 'shopify-variant-id', externalId: variantId },
+    title,
+    available,
+    priceCents,
+    currency,
+    checkedAt: now,
+  };
 }
 
 /**

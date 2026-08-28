@@ -42,9 +42,96 @@ export function productUrlForVariant(productUrl: string, variantId: VariantId): 
  */
 export type VariantId = string;
 
+/**
+ * Astra2Radar's own identity for one physical purchasable configuration.
+ *
+ * Derived from physical attributes (product, colour, RAM, storage) and NOTHING else. It is never
+ * a Shopify id, a SKU, a GTIN, a retailer id, a URL slug, or anything a source hands us — those
+ * are all external aliases that may change, disagree between adapters, or be reassigned by the
+ * retailer. Production has already demonstrated the failure: `state:variant:*` accumulated two
+ * disjoint id namespaces for the same four tablets, and a fallback between adapters would have
+ * made every variant look brand new.
+ */
+export type CanonicalVariantId = string;
+
+/** A monitored storefront. One product page at one retailer, in one region. */
+export type SourceId = string;
+
+/**
+ * Which FIELD an external identifier was read from — never a claim about the value's format.
+ *
+ * `source-sku` means "the value of a sku field", not "an EAN". The distinction is load-bearing:
+ * REDMAGIC's sku values happen to look like EAN-13, but `jsonld.ts` reads
+ * `offer.sku ?? offer.mpn ?? item.sku`, and a future retailer's `sku` may be an arbitrary internal
+ * code. Labelling by format would assert something no adapter actually verified.
+ *
+ * `gtin` is reserved for a value read from an explicit gtin/gtin8/gtin12/gtin13/gtin14 field AND
+ * check-digit validated. No adapter reads one today, so it is currently unreachable and
+ * fail-closed by construction.
+ */
+export const IDENTITY_NAMESPACES = [
+  'shopify-variant-id',
+  'source-sku',
+  'source-mpn',
+  'gtin',
+  'retailer-sku',
+  'synthetic',
+] as const;
+
+export type IdentityNamespace = (typeof IDENTITY_NAMESPACES)[number];
+
+/**
+ * An external identifier is only meaningful inside its scope.
+ *
+ * A single typed record rather than three positional strings on purpose: a
+ * `resolve(source, namespace, id)` signature can be called with its arguments transposed and
+ * still compile, which is the same class of mistake that produced a wrong alias table during
+ * planning. Named fields make that unrepresentable.
+ */
+export interface ScopedExternalId {
+  sourceId: SourceId;
+  namespace: IdentityNamespace;
+  externalId: string;
+}
+
+/** One physical configuration in Astra2Radar's catalogue. */
+export interface CanonicalVariant {
+  id: CanonicalVariantId;
+  productId: string;
+  colour: string;
+  ramGb: number;
+  storageGb: number;
+  /** Fallback label. A source's own title is preferred when it supplies one. */
+  displayName: string;
+}
+
+/** The only source monitored in Phase 1A. */
+export const REDMAGIC_SOURCE_ID: SourceId = 'redmagic-global';
+
 /** One observation of one variant at one moment. */
 export interface StockSnapshot {
+  /**
+   * ON THE WIRE THIS IS THE PREFERRED PURCHASE ALIAS, not the identifier that was observed.
+   *
+   * The two differ whenever a non-primary adapter wins. A `jsonld` pass observes a sku, but
+   * REDMAGIC's cart only understands `?variant=<shopify id>` — putting the observed value in the
+   * link makes Shopify silently fall back to the product's DEFAULT variant, so an alert for
+   * Starfrost 16+512 would open Eclipse 12+256 with no error anywhere. The worker resolves the
+   * purchase alias before this leaves the building, which is why no app change was needed.
+   *
+   * Always populated on the wire. A snapshot whose observed identifier does not resolve to a
+   * canonical variant has no trustworthy purchase alias either, so it is excluded from the wire
+   * set entirely rather than published with a missing or guessed link — the same fail-closed rule
+   * that stops it latching or alerting. It is still recorded in operator telemetry.
+   */
   variantId: VariantId;
+  /**
+   * Astra2Radar's identity for this configuration. Null means the observed identifier resolved to
+   * nothing: the snapshot is retained for telemetry but is NOT alertable and never latches.
+   */
+  canonicalId?: CanonicalVariantId | null;
+  /** Exactly what was read, and from where. Preserved so an unmapped id can be diagnosed later. */
+  observed?: ScopedExternalId;
   /** Human-readable configuration, e.g. "Silver / 16GB + 512GB". Shown in the notification. */
   title: string;
   /** True only when the variant can actually be added to cart right now. */

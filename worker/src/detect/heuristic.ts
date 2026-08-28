@@ -62,6 +62,13 @@ export const heuristicAdapter: Adapter = {
 
     const snapshot: StockSnapshot = {
       variantId: syntheticVariantId(ctx.productUrl),
+      // Fabricated from the URL -- it identifies nothing at the source. `synthetic` is never
+      // aliased, so a heuristic-only pass is non-alertable by construction rather than by policy.
+      observed: {
+        sourceId: ctx.sourceId,
+        namespace: 'synthetic',
+        externalId: syntheticVariantId(ctx.productUrl),
+      },
       title: PRODUCT_TITLE,
       available,
       priceCents: null,

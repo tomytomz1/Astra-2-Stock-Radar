@@ -1,5 +1,5 @@
-import { ADAPTER_ORDER } from '@astra/contract';
-import type { AdapterName, DetectConfig, DetectResult } from '@astra/contract';
+import { ADAPTER_ORDER, REDMAGIC_SOURCE_ID } from '@astra/contract';
+import type { AdapterName, DetectConfig, DetectResult, SourceId } from '@astra/contract';
 import { heuristicAdapter } from './heuristic';
 import { jsonLdAdapter } from './jsonld';
 import { shopifyJsAdapter } from './shopify-js';
@@ -15,6 +15,8 @@ const ADAPTERS: Record<AdapterName, Adapter> = {
 };
 
 export interface DetectOptions {
+  /** Defaults to the only source Phase 1A monitors. */
+  sourceId?: SourceId;
   productUrl: string;
   config: DetectConfig;
   fetchImpl: FetchLike;
@@ -37,6 +39,7 @@ export interface DetectOptions {
 export async function detect(options: DetectOptions): Promise<DetectResult> {
   const order = resolveOrder(options.config.preferredAdapter);
   const ctx: AdapterContext = {
+    sourceId: options.sourceId ?? REDMAGIC_SOURCE_ID,
     productUrl: options.productUrl,
     config: options.config,
     fetchImpl: options.fetchImpl,

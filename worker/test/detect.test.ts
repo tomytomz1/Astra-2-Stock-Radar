@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { REDMAGIC_SOURCE_ID } from '@astra/contract';
 import type { DetectConfig } from '@astra/contract';
 import { detect, resolveOrder } from '../src/detect/index';
 import { coerceDetectConfig } from '../src/detect/config';
@@ -21,7 +22,7 @@ const EMPTY_CONFIG: DetectConfig = {
 };
 
 function ctx(fetchImpl: AdapterContext['fetchImpl'], config: DetectConfig = EMPTY_CONFIG): AdapterContext {
-  return { productUrl: PRODUCT_URL, config, fetchImpl, now: NOW, timeoutMs: 1000 };
+  return { sourceId: REDMAGIC_SOURCE_ID, productUrl: PRODUCT_URL, config, fetchImpl, now: NOW, timeoutMs: 1000 };
 }
 
 describe('shopify-js adapter', () => {
@@ -36,6 +37,12 @@ describe('shopify-js adapter', () => {
     expect(result.snapshots).toHaveLength(3);
     expect(result.snapshots[0]).toEqual({
       variantId: '44892134567001',
+      // Shopify's `.js` always yields a Shopify variant id, whatever the value looks like.
+      observed: {
+        sourceId: REDMAGIC_SOURCE_ID,
+        namespace: 'shopify-variant-id',
+        externalId: '44892134567001',
+      },
       title: 'Silver / 16GB + 512GB',
       available: true,
       // The `.js` endpoint already returns cents; it must not be multiplied again.
@@ -159,6 +166,14 @@ describe('jsonld adapter', () => {
     expect(result.snapshots).toHaveLength(3);
     expect(result.snapshots[0]).toEqual({
       variantId: 'RM-ASTRA2-SL-16-512',
+      // Read from the offer's `sku` field, so the namespace is `source-sku` -- and note the value
+      // is an alphanumeric part code, not a barcode. This is precisely why the namespace names the
+      // FIELD rather than claiming a format: an `sku-ean` label would be false here.
+      observed: {
+        sourceId: REDMAGIC_SOURCE_ID,
+        namespace: 'source-sku',
+        externalId: 'RM-ASTRA2-SL-16-512',
+      },
       title: 'Silver / 16GB + 512GB',
       available: true,
       priceCents: 89900,
