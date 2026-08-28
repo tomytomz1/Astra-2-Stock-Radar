@@ -242,6 +242,23 @@ interface KvNamespaceListEntry {
   title: string;
 }
 
+/**
+ * Parse a JSON array out of wrangler's stdout.
+ *
+ * `JSON.parse(stdout)` assumed stdout was nothing but JSON. Wrangler 4 breaks that assumption --
+ * it prints a first-run telemetry notice, and update banners appear on any version -- so a
+ * perfectly good response can arrive with prose in front of it. Slicing from the first bracket to
+ * the last is what keeps `kv namespace list` and `kv key list` working across wrangler versions.
+ */
+function parseJsonArray<T>(stdout: string): T[] {
+  const start = stdout.indexOf('[');
+  const end = stdout.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) {
+    throw new SyntaxError('no JSON array found in wrangler output');
+  }
+  return JSON.parse(stdout.slice(start, end + 1)) as T[];
+}
+
 function listKvNamespaces(): KvNamespaceListEntry[] {
   const res = runWrangler(['kv', 'namespace', 'list']);
   if (!res.ok) {
@@ -250,7 +267,7 @@ function listKvNamespaces(): KvNamespaceListEntry[] {
     );
   }
   try {
-    return JSON.parse(res.stdout) as KvNamespaceListEntry[];
+    return parseJsonArray<KvNamespaceListEntry>(res.stdout);
   } catch (err) {
     throw new SetupError(
       `Could not parse \`wrangler kv namespace list\` output as JSON: ${err instanceof Error ? err.message : String(err)}\n\nRaw output:\n${indent(res.stdout)}`,

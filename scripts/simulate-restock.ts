@@ -155,13 +155,30 @@ interface KvListEntry {
   name: string;
 }
 
+/**
+ * Parse a JSON array out of wrangler's stdout.
+ *
+ * `JSON.parse(stdout)` assumed stdout was nothing but JSON. Wrangler 4 breaks that assumption --
+ * it prints a first-run telemetry notice, and update banners appear on any version -- so a
+ * perfectly good response can arrive with prose in front of it. Slicing from the first bracket to
+ * the last is what keeps `kv namespace list` and `kv key list` working across wrangler versions.
+ */
+function parseJsonArray<T>(stdout: string): T[] {
+  const start = stdout.indexOf('[');
+  const end = stdout.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) {
+    throw new SyntaxError('no JSON array found in wrangler output');
+  }
+  return JSON.parse(stdout.slice(start, end + 1)) as T[];
+}
+
 function kvListVariantKeys(): string[] {
   const res = runWrangler(['kv', 'key', 'list', '--binding', KV_BINDING, '--prefix', VARIANT_KEY_PREFIX]);
   if (!res.ok) {
     throw new Error(`wrangler kv key list failed (exit ${res.status ?? 'unknown'}): ${res.stderr.trim() || '(no stderr)'}`);
   }
   try {
-    const parsed = JSON.parse(res.stdout) as KvListEntry[];
+    const parsed = parseJsonArray<KvListEntry>(res.stdout);
     return parsed.map((e) => e.name);
   } catch (err) {
     throw new Error(`could not parse \`wrangler kv key list\` output as JSON: ${err instanceof Error ? err.message : err}`);
