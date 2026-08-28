@@ -100,6 +100,12 @@ export interface StatusResponse {
   /** Consecutive failed detection passes. Non-zero means the detector may be broken. */
   consecutiveFailures: number;
   adapter: AdapterName | null;
+  /**
+   * Devices currently registered for alerts. Zero means a restock would be detected correctly
+   * and then delivered to nobody — indistinguishable from a healthy system in every other field
+   * here, which is exactly why it is reported.
+   */
+  registeredDevices: number;
 }
 
 /** Shape of the `data` payload attached to every restock push. */
@@ -131,8 +137,28 @@ export interface DetectorPushData {
   reason: string | null;
 }
 
+/**
+ * Periodic proof of life.
+ *
+ * Push tokens do not live forever — an OS update, a reinstall, or ordinary APNs housekeeping can
+ * invalidate one. The Worker prunes it correctly on a `DeviceNotRegistered` receipt, and the
+ * result is an empty registry with everything else looking perfectly healthy: the cron fires,
+ * detection succeeds, `/status` reports zero failures, and there is nobody left to notify.
+ *
+ * The app re-registers on foreground, so opening it heals this — but the whole premise is that
+ * you never open it. Without a heartbeat the system can sit silently dead for months and the
+ * first sign would be a restock that never reached you.
+ */
+export interface HeartbeatPushData {
+  kind: 'heartbeat';
+  /** Variants being watched at the time of the ping. Evidence, not reassurance. */
+  variantCount: number;
+  /** Epoch ms of the last successful store read. */
+  lastSuccessAt: number;
+}
+
 /** Every push payload this system can send. Consumers should switch on `kind`. */
-export type PushData = RestockPushData | DetectorPushData;
+export type PushData = RestockPushData | DetectorPushData | HeartbeatPushData;
 
 // ---------------------------------------------------------------------------
 // Tunables — see plan file for the reasoning behind each
@@ -171,6 +197,15 @@ export const ANDROID_CHANNEL_DETECTOR = 'detector-alerts';
  * to be unambiguous at 3am is worse than a possibly-wrong symbol, and this store prices in USD.
  */
 export const FALLBACK_CURRENCY = 'USD';
+
+/**
+ * How often to send proof of life, in ms.
+ *
+ * Weekly is the compromise: frequent enough that a silently dead registry surfaces in days
+ * rather than months, rare enough not to become noise you learn to swipe away. If the ping stops
+ * arriving, something is broken — that is the whole signal.
+ */
+export const HEARTBEAT_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Consecutive detection failures before the detector itself is reported as broken. */
 export const FAILURE_ALERT_THRESHOLD = 15;
@@ -219,6 +254,15 @@ export interface HealthState {
   consecutiveFailures: number;
   lastAdapter: AdapterName | null;
   lastReason: string | null;
+  /**
+   * Epoch ms of the last liveness heartbeat, or null if none has been sent.
+   *
+   * Lives on the health record rather than its own KV key because `recordSuccess` already reads
+   * this record on every pass — so the heartbeat costs zero additional reads and one write a
+   * week. Every code path that writes health MUST carry this value forward; dropping it would
+   * make the heartbeat re-fire on the next pass.
+   */
+  lastHeartbeatAt: number | null;
   /**
    * Epoch ms of the last detector-down page, or null if the current outage has not been paged
    * (or there is no outage). Doubles as the "an outage is open" flag: non-null on a successful

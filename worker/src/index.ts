@@ -11,9 +11,14 @@ import type {
 import { detect } from './detect/index';
 import { detectConfig } from './detect/config';
 import type { FetchLike } from './detect/types';
-import { dispatch, dispatchDetectorPage, type DispatchSummary } from './dispatch';
+import {
+  dispatch,
+  dispatchDetectorPage,
+  dispatchHeartbeat,
+  type DispatchSummary,
+} from './dispatch';
 import type { KVStore } from './kv';
-import { isValidExpoToken, registerDevice, unregisterDevice } from './registry';
+import { isValidExpoToken, readRegistry, registerDevice, unregisterDevice } from './registry';
 import {
   applySnapshots,
   cacheSnapshots,
@@ -142,7 +147,7 @@ export async function runPass(deps: PassDeps): Promise<PassSummary> {
   const forced = await consumeForceAlert(deps.kv, result.snapshots);
   if (forced !== null) alerts.push(forced);
   await cacheSnapshots(deps.kv, result.snapshots, deps.now);
-  const { recoveryNoticeDue } = await recordSuccess(deps.kv, result.adapter, deps.now);
+  const { recoveryNoticeDue, heartbeatDue } = await recordSuccess(deps.kv, result.adapter, deps.now);
 
   // Close the loop only for an outage the user was actually paged about; `recordSuccess` has
   // already cleared the flag, so this fires once per outage rather than once per pass.
@@ -157,6 +162,20 @@ export async function runPass(deps: PassDeps): Promise<PassSummary> {
         reason: null,
       })
     : null;
+
+  // Proof of life. Only on a successful pass -- a heartbeat sent while the store is unreadable
+  // would assert exactly the thing that is not true. `dispatchHeartbeat` is silent when nobody
+  // is registered, which is the case this whole feature exists to make visible.
+  if (heartbeatDue) {
+    await dispatchHeartbeat({
+      kv: deps.kv,
+      fetchImpl: deps.fetchImpl,
+      now: deps.now,
+      accessToken: deps.accessToken,
+      variantCount: result.snapshots.length,
+      lastSuccessAt: deps.now,
+    });
+  }
 
   const dispatchSummary =
     alerts.length === 0
@@ -253,12 +272,19 @@ async function handleUnregister(request: Request, env: Env): Promise<Response> {
  * can lag reality by up to that much -- both are consequences of the write budget (invariant 3).
  */
 export async function handleStatus(kv: KVStore): Promise<StatusResponse> {
-  const [health, cache] = await Promise.all([readHealth(kv), readSnapshotCache(kv)]);
+  const [health, cache, devices] = await Promise.all([
+    readHealth(kv),
+    readSnapshotCache(kv),
+    readRegistry(kv),
+  ]);
   return {
     snapshots: cache?.snapshots ?? [],
     lastSuccessAt: health?.lastSuccessAt ?? null,
     consecutiveFailures: health?.consecutiveFailures ?? 0,
     adapter: health?.lastAdapter ?? null,
+    // Zero here means a restock would be detected perfectly and delivered to nobody. Every other
+    // field would still read healthy, which is why this one is worth a round trip.
+    registeredDevices: devices.length,
   };
 }
 

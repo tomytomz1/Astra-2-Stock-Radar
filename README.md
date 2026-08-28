@@ -278,6 +278,36 @@ unsure which one that is — see Troubleshooting). The script prints the exact
 `wrangler kv key put`/`delete` command to undo itself. Watch your device for the notification, or
 poll `GET /status` on the deployed Worker.
 
+## Liveness heartbeat
+
+Once a week, on a successful pass, the Worker sends one "watcher is running" push to every
+registered device. It carries evidence rather than reassurance — the variant count and how long
+ago the store was actually read — because "everything is fine" would read identically from a
+watcher that stopped working an hour ago.
+
+It exists for a failure mode nothing else covers. Push tokens do not live forever; an OS update,
+a reinstall, or ordinary APNs housekeeping can invalidate one. The Worker prunes it correctly on
+the `DeviceNotRegistered` receipt, and the registry is then **empty** — while the cron keeps
+firing, detection keeps succeeding, and `/status` keeps reporting zero failures. A restock would
+be detected perfectly and delivered to nobody. Opening the app re-registers and heals it, but the
+whole premise is that you never open the app, so this could persist for months.
+
+**If the weekly ping stops arriving, something is broken.** That is the entire signal.
+
+It rides the `detector-alerts` channel at normal priority and is never Time Sensitive, so it can
+be muted without muting a restock alert. A weekly ping on the restock channel would train you to
+swipe away the one sound that matters.
+
+`GET /status` also reports `registeredDevices`, and the app shows a red banner at zero.
+
+To test it without waiting a week:
+
+```
+pnpm simulate-restock --heartbeat
+```
+
+That back-dates `lastHeartbeatAt` so the next cron pass sends one.
+
 ## Known limitation: the registration gap
 
 Between step 3 (the Worker goes live) and step 6 (the app is installed and has registered a push

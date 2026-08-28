@@ -10,6 +10,8 @@ interface Props {
   consecutiveFailures: number;
   adapter: string | null;
   nowMs: number;
+  /** Devices the worker would notify. Zero means alerts go nowhere. */
+  registeredDevices: number;
 }
 
 /**
@@ -18,9 +20,16 @@ interface Props {
  * the two would let a broken detector masquerade as a quiet one, so this always renders
  * separately from (and above) the stock list whenever there's a failure streak.
  */
-export function HealthBanner({ lastSuccessAt, consecutiveFailures, adapter, nowMs }: Props) {
+export function HealthBanner({
+  lastSuccessAt,
+  consecutiveFailures,
+  adapter,
+  nowMs,
+  registeredDevices,
+}: Props) {
   const broken = consecutiveFailures >= FAILURE_ALERT_THRESHOLD;
   const degraded = consecutiveFailures > 0;
+  const noDevices = registeredDevices === 0;
 
   return (
     <View style={styles.row}>
@@ -32,6 +41,17 @@ export function HealthBanner({ lastSuccessAt, consecutiveFailures, adapter, nowM
         </Text>
         {adapter ? <Text style={styles.adapterText}>via {adapter}</Text> : null}
       </View>
+
+      {noDevices ? (
+        <View style={[styles.warningCard, styles.danger]}>
+          <Text style={styles.warningTitle}>No device will be alerted</Text>
+          <Text style={styles.warningBody}>
+            The watcher is running, but no push token is registered — a restock would be detected
+            and delivered to nobody. Pull to refresh; if this persists, grant notification
+            permission in Settings.
+          </Text>
+        </View>
+      ) : null}
 
       {degraded ? (
         <View style={[styles.warningCard, broken ? styles.danger : styles.warning]}>

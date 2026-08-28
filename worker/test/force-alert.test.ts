@@ -40,6 +40,7 @@ function soldOutWithDevice(): FakeKV {
     lastAdapter: 'shopify-js',
     lastReason: null,
     lastPagedAt: null,
+    lastHeartbeatAt: null,
   };
   return new FakeKV({
     [KV_KEYS.tokenRegistry]: [device('ExponentPushToken[watcher]')],
