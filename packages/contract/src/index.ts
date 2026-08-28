@@ -156,6 +156,15 @@ export const EXPO_PUSH_RECEIPT_URL = 'https://exp.host/--/api/v2/push/getReceipt
 export const ANDROID_CHANNEL_RESTOCK = 'restock-alerts';
 export const ANDROID_CHANNEL_DETECTOR = 'detector-alerts';
 
+/**
+ * Currency assumed when the storefront does not state one.
+ *
+ * The live store's `.js` endpoint returns prices with no currency field at all, so without this
+ * a restock alert reads "699.00 — tap to open…". A bare number in the one notification that has
+ * to be unambiguous at 3am is worse than a possibly-wrong symbol, and this store prices in USD.
+ */
+export const FALLBACK_CURRENCY = 'USD';
+
 /** Consecutive detection failures before the detector itself is reported as broken. */
 export const FAILURE_ALERT_THRESHOLD = 15;
 

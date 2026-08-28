@@ -1,4 +1,5 @@
 import {
+  FALLBACK_CURRENCY,
   ANDROID_CHANNEL_DETECTOR,
   ANDROID_CHANNEL_RESTOCK,
   EXPO_PUSH_BATCH_SIZE,
@@ -132,16 +133,16 @@ export function buildBody(alert: StockSnapshot): string {
 export function formatPrice(priceCents: number | null, currency: string | null): string | null {
   if (priceCents === null) return null;
   const amount = priceCents / 100;
-  if (currency !== null) {
-    try {
-      return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-    } catch {
-      // Unknown/invalid currency code: fall through to the plain form rather than throwing
-      // inside a cron pass.
-      return `${amount.toFixed(2)} ${currency}`;
-    }
+  // The live store's `.js` endpoint states no currency, so fall back rather than render a bare
+  // number: "699.00" in a restock alert is ambiguous exactly when it matters most.
+  const resolved = currency ?? FALLBACK_CURRENCY;
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: resolved }).format(amount);
+  } catch {
+    // Unknown or invalid currency code: degrade to the plain form rather than throwing inside a
+    // cron pass, where an exception would cost the whole detection cycle.
+    return `${amount.toFixed(2)} ${resolved}`;
   }
-  return amount.toFixed(2);
 }
 
 export function chunk<T>(items: T[], size: number): T[][] {

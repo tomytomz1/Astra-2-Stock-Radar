@@ -51,6 +51,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // notification handling.
     infoPlist: {
       ...config.ios?.infoPlist,
+      /**
+       * Apple's export-compliance declaration. The app uses only standard HTTPS/TLS and no
+       * custom cryptography, which is exempt. Declaring it here stops `eas build` and
+       * `eas submit` prompting for it on every single run.
+       */
+      ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {

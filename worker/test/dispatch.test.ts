@@ -63,7 +63,10 @@ describe('message content', () => {
   it('falls back gracefully on an unknown currency code', () => {
     expect(formatPrice(89900, 'USD')).toBe('$899.00');
     expect(formatPrice(89900, 'NOT-A-CURRENCY')).toBe('899.00 NOT-A-CURRENCY');
-    expect(formatPrice(89900, null)).toBe('899.00');
+    // A storefront that states no currency falls back rather than rendering a bare number:
+    // the live store's `.js` endpoint does exactly this, and "899.00" in a restock alert is
+    // ambiguous precisely when it matters most.
+    expect(formatPrice(89900, null)).toBe('$899.00');
     expect(formatPrice(null, 'USD')).toBeNull();
   });
 });
