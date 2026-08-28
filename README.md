@@ -383,7 +383,17 @@ report that something was wrong but never what, and diagnosing meant:
 pnpm --filter @astra/worker exec wrangler kv key get "state:health" --binding STOCK_KV --preview false --text
 ```
 
-That command still works and shows the full record, including the backoff fields.
+That command still works and shows the full record, including the backoff fields — but note
+`--remote`:
+
+```bash
+pnpm --filter @astra/worker exec wrangler kv key get "state:health" --binding STOCK_KV --preview false --remote --text
+```
+
+**Wrangler 4 defaults `kv key` commands to local storage.** Without `--remote` the command does
+not error — it answers `Value not found` for a key that plainly exists, having read an empty local
+simulator and never contacted Cloudflare. `kv key put` is worse: it reports success. `pnpm
+simulate-restock` adds the flag itself, and preflight checks that it still does.
 
 ## Known limitation: the registration gap
 

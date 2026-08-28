@@ -420,6 +420,37 @@ function checkAppBundles(): void {
  *
  * More specific globs win, so a directory owner can carve out one file for another agent.
  */
+/**
+ * Every `wrangler kv key` invocation must carry `--remote`.
+ *
+ * Wrangler 4 defaults these commands to LOCAL storage. A script that omits the flag does not
+ * error -- `kv key get` answers "Value not found" and `kv key put` reports success, both having
+ * operated on an empty local simulator without ever contacting Cloudflare. That is the worst
+ * possible failure shape: arming a force-alert would look like it worked and nothing would fire,
+ * and `simulate-restock` would confirm a delivery path that was never exercised.
+ *
+ * It bit us on the wrangler 3 -> 4 upgrade and nothing caught it, because no gate here invokes
+ * wrangler (it needs Cloudflare credentials, which CI deliberately does not have). A static scan
+ * of the invocation sites is what is actually checkable, so that is what this does.
+ */
+function checkKvCommandsAreRemote(): void {
+  const offenders: string[] = [];
+  for (const file of walk(join(ROOT, 'scripts'))) {
+    const source = stripComments(readFileSync(file, 'utf8'));
+    // The flag may be appended centrally rather than at the call site (simulate-restock builds it
+    // in `withKvFlags`), so require the file as a whole to mention it -- per-line matching would
+    // produce false positives on exactly the correct pattern.
+    if (!/['"]kv['"]\s*,\s*['"]key['"]/.test(source)) continue;
+    if (!source.includes("'--remote'") && !source.includes('"--remote"')) {
+      offenders.push(
+        `${relative(ROOT, file)} invokes \`wrangler kv key\` without --remote — wrangler 4 would ` +
+          `silently use LOCAL storage`,
+      );
+    }
+  }
+  record('wrangler kv key commands target remote storage', offenders.length === 0, offenders);
+}
+
 function checkOwnershipIsUnambiguous(): void {
   const manifest = JSON.parse(readFileSync(join(ROOT, '.claude/ownership.json'), 'utf8')) as {
     owners: Record<string, { owns: string[] }>;
@@ -520,6 +551,7 @@ function main(): void {
   checkWindowsSafeCommands();
   checkModulePathsUseFileURLToPath();
   checkAppBundlerResolves();
+  checkKvCommandsAreRemote();
   checkOwnershipIsUnambiguous();
   checkNoSecrets();
 
