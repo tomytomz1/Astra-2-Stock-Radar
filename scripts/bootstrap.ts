@@ -15,7 +15,8 @@
  *      exact-line replacement, never touching the surrounding comments. Never overwrites an id
  *      that is already a real value.
  *   4. Deploys the worker (`wrangler deploy`) and parses the printed `*.workers.dev` URL.
- *   5. Writes that URL into `app/eas.json`'s `build.preview.env.EXPO_PUBLIC_WORKER_URL`.
+ *   5. Writes that URL into EVERY `app/eas.json` build profile that declares
+ *      `EXPO_PUBLIC_WORKER_URL` (development, preview, production).
  *   6. Prints a summary: which files changed, the worker URL, and the next command to run.
  *
  * `--dry-run` walks through every step and prints what it *would* do, but creates nothing,
@@ -39,6 +40,12 @@ import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  applyWorkerUrl,
+  profilesWithWorkerUrl,
+  WORKER_URL_ENV,
+  type EasJson,
+} from './eas-json';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, '..');
@@ -460,7 +467,7 @@ async function deployWorker(): Promise<DeployOutcome> {
     log('');
     log('WARNING: deploy succeeded, but no *.workers.dev URL could be parsed from the output above.');
     log('Find it in the Cloudflare dashboard (Workers & Pages -> your worker) and paste it into');
-    log('app/eas.json yourself, under build.preview.env.EXPO_PUBLIC_WORKER_URL.');
+    log(`app/eas.json yourself, under each build profile's env.${WORKER_URL_ENV}.`);
     return { ok: false, reason: 'unparseable' };
   }
   const url = match[0].replace(/[),.]+$/, ''); // trim any trailing punctuation swept up by the match
@@ -472,19 +479,10 @@ async function deployWorker(): Promise<DeployOutcome> {
 // Step 5: patch app/eas.json
 // ---------------------------------------------------------------------------
 
-interface EasJson {
-  build?: {
-    preview?: {
-      env?: Record<string, string>;
-      [key: string]: unknown;
-    };
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
+
 
 async function patchEasJson(deployOutcome: DeployOutcome): Promise<boolean> {
-  step(5, "Write the worker URL into app/eas.json's preview profile");
+  step(5, 'Write the worker URL into every app/eas.json build profile');
 
   if (!deployOutcome.ok) {
     log(
@@ -493,7 +491,7 @@ async function patchEasJson(deployOutcome: DeployOutcome): Promise<boolean> {
         : 'No worker URL available (see the warning above) -- leaving app/eas.json untouched.',
     );
     if (deployOutcome.reason === 'dry-run') {
-      log('update build.preview.env.EXPO_PUBLIC_WORKER_URL with the deployed URL.');
+      log(`update every build profile's env.${WORKER_URL_ENV} with the deployed URL.`);
     }
     return false;
   }
@@ -502,31 +500,38 @@ async function patchEasJson(deployOutcome: DeployOutcome): Promise<boolean> {
   const raw = await readFile(EAS_JSON_PATH, 'utf8');
   const parsed = JSON.parse(raw) as EasJson;
 
-  if (!parsed.build || !parsed.build.preview) {
+  const profiles = profilesWithWorkerUrl(parsed);
+
+  if (profiles.length === 0) {
     throw new SetupError(
-      "app/eas.json has no build.preview profile -- this script expects one (see app/eas.json's " +
-        'current shape). Edit the file by hand instead.',
+      `app/eas.json has no build profile declaring ${WORKER_URL_ENV} -- this script expects at ` +
+        "least one (see app/eas.json's current shape). Edit the file by hand instead.",
     );
   }
 
-  const currentUrl = parsed.build.preview.env?.EXPO_PUBLIC_WORKER_URL;
-  if (currentUrl === workerUrl) {
-    log(`build.preview.env.EXPO_PUBLIC_WORKER_URL is already "${workerUrl}" -- nothing to change.`);
+  const stale = profiles.filter(([, profile]) => profile.env?.[WORKER_URL_ENV] !== workerUrl);
+  if (stale.length === 0) {
+    log(
+      `${WORKER_URL_ENV} is already "${workerUrl}" in every profile ` +
+        `(${profiles.map(([name]) => name).join(', ')}) -- nothing to change.`,
+    );
     return false;
   }
 
-  log(`build.preview.env.EXPO_PUBLIC_WORKER_URL: ${currentUrl ?? '(unset)'} -> ${workerUrl}`);
+  for (const [name, profile] of stale) {
+    log(`build.${name}.env.${WORKER_URL_ENV}: ${profile.env?.[WORKER_URL_ENV] ?? '(unset)'} -> ${workerUrl}`);
+  }
 
   if (DRY_RUN) {
-    log('--dry-run: would write this change, preserving the file\'s existing JSON formatting.');
+    log('--dry-run: would write these changes, preserving the file\'s existing JSON formatting.');
     return false;
   }
 
-  parsed.build.preview.env = { ...parsed.build.preview.env, EXPO_PUBLIC_WORKER_URL: workerUrl };
+  applyWorkerUrl(parsed, workerUrl);
   // JSON.parse/stringify round-trips key order for existing keys, and app/eas.json is plain JSON
   // (no comments to lose) -- so 2-space indent + stringify preserves formatting faithfully.
   await writeFile(EAS_JSON_PATH, `${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
-  log('Wrote app/eas.json.');
+  log(`Wrote app/eas.json (${stale.map(([name]) => name).join(', ')}).`);
   return true;
 }
 

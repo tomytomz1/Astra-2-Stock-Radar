@@ -40,6 +40,18 @@ export function getWorkerBaseUrl(): string {
     );
   }
 
+  // The template placeholder from app/eas.json. `pnpm bootstrap` replaces it in every build
+  // profile, but a build made before that ran -- or with a profile it somehow missed -- would
+  // otherwise resolve DNS-fail on every request and read as "the store is down" rather than "this
+  // binary was built without a worker URL". Those need completely different fixes.
+  if (raw.includes('REPLACE-WITH-YOUR-WORKER')) {
+    throw new WorkerConfigError(
+      `This build was made with a placeholder worker URL (${raw}). Run \`pnpm bootstrap\` to write ` +
+        'the deployed URL into app/eas.json, then rebuild -- an OTA update cannot fix it, because ' +
+        'the URL is baked in at build time.',
+    );
+  }
+
   cachedBaseUrl = raw.replace(/\/+$/, '');
   return cachedBaseUrl;
 }
