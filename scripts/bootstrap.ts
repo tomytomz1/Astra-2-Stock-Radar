@@ -101,13 +101,38 @@ interface WranglerResult {
  * devDependencies) and runs it with cwd = worker/, so wrangler.toml is auto-discovered exactly
  * the way `pnpm --filter @astra/worker deploy` and `simulate-restock.ts` both find it.
  */
+/**
+ * Running pnpm without a shell, on every platform.
+ *
+ * Windows resolves `pnpm` to a `.cmd` shim, and since Node's CVE-2024-27980 fix `execFile`
+ * refuses to run one at all (EINVAL, suffixed or not). `shell: true` works but concatenates
+ * arguments instead of escaping them — Node warns about exactly this (DEP0190), and
+ * `simulate-restock` passes a variant id straight from the command line, so the concern is real
+ * here rather than theoretical.
+ *
+ * `npm_execpath` is set by pnpm for any script it runs and points at pnpm's own JS entrypoint,
+ * so invoking Node on it directly sidesteps the shim entirely: no shell, arguments passed as a
+ * real array, nothing to escape. The shell path remains only as a fallback for direct
+ * `tsx scripts/...` invocation outside a pnpm script.
+ */
+const PNPM_JS: string | undefined = process.env.npm_execpath;
+
+function pnpmCommand(args: string[]): { file: string; args: string[]; shell: boolean } {
+  if (PNPM_JS !== undefined && PNPM_JS !== '') {
+    return { file: process.execPath, args: [PNPM_JS, ...args], shell: false };
+  }
+  return { file: 'pnpm', args, shell: process.platform === 'win32' };
+}
+
 function runWrangler(args: string[], timeoutMs?: number): WranglerResult {
   try {
+    const spec = pnpmCommand(['--filter', '@astra/worker', 'exec', 'wrangler', ...args]);
     const stdout = execFileSync(
-      'pnpm',
-      ['--filter', '@astra/worker', 'exec', 'wrangler', ...args],
+      spec.file,
+      spec.args,
       {
         encoding: 'utf8',
+        shell: spec.shell,
         stdio: ['ignore', 'pipe', 'pipe'],
         ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
       },

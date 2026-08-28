@@ -37,6 +37,9 @@ import { execFileSync } from 'node:child_process';
 import { KV_KEYS } from '../packages/contract/src/index.js';
 import type { VariantState } from '../packages/contract/src/index.js';
 
+/** The one-shot trigger key. Named in the contract so the worker and this script cannot drift. */
+const FORCE_KEY = KV_KEYS.forceAlert;
+
 // Must match the `binding` name in worker/wrangler.toml's [[kv_namespaces]] entry.
 const KV_BINDING = 'STOCK_KV';
 const VARIANT_KEY_PREFIX = KV_KEYS.variantState(''); // derived from the contract, not hardcoded
@@ -59,9 +62,47 @@ interface WranglerResult {
  * the way `pnpm --filter @astra/worker deploy` finds it. Nothing here has to guess at
  * node_modules layout.
  */
+/**
+ * `wrangler kv` refuses to guess which namespace to touch when wrangler.toml carries both `id`
+ * and `preview_id` -- which `pnpm bootstrap` deliberately writes, since `preview_id` is what
+ * `wrangler dev` binds. Every `kv` subcommand therefore needs an explicit `--preview false` to
+ * target the production namespace the deployed worker actually reads. Non-`kv` subcommands do
+ * not accept the flag, so it is added only where it applies.
+ */
+function withPreviewFlag(args: string[]): string[] {
+  // `kv key ...` only. `kv namespace create --preview` means something entirely different --
+  // create the preview namespace -- so the flag must not be sprayed across every kv subcommand.
+  return args[0] === 'kv' && args[1] === 'key' ? [...args, '--preview', 'false'] : args;
+}
+
+/**
+ * Running pnpm without a shell, on every platform.
+ *
+ * Windows resolves `pnpm` to a `.cmd` shim, and since Node's CVE-2024-27980 fix `execFile`
+ * refuses to run one at all (EINVAL, suffixed or not). `shell: true` works but concatenates
+ * arguments instead of escaping them — Node warns about exactly this (DEP0190), and
+ * `simulate-restock` passes a variant id straight from the command line, so the concern is real
+ * here rather than theoretical.
+ *
+ * `npm_execpath` is set by pnpm for any script it runs and points at pnpm's own JS entrypoint,
+ * so invoking Node on it directly sidesteps the shim entirely: no shell, arguments passed as a
+ * real array, nothing to escape. The shell path remains only as a fallback for direct
+ * `tsx scripts/...` invocation outside a pnpm script.
+ */
+const PNPM_JS: string | undefined = process.env.npm_execpath;
+
+function pnpmCommand(args: string[]): { file: string; args: string[]; shell: boolean } {
+  if (PNPM_JS !== undefined && PNPM_JS !== '') {
+    return { file: process.execPath, args: [PNPM_JS, ...args], shell: false };
+  }
+  return { file: 'pnpm', args, shell: process.platform === 'win32' };
+}
+
 function runWrangler(args: string[]): WranglerResult {
   try {
-    const stdout = execFileSync('pnpm', ['--filter', '@astra/worker', 'exec', 'wrangler', ...args], {
+    const spec = pnpmCommand(['--filter', '@astra/worker', 'exec', 'wrangler', ...withPreviewFlag(args)]);
+    const stdout = execFileSync(spec.file, spec.args, {
+      shell: spec.shell,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -204,12 +245,16 @@ async function main(): Promise<void> {
   const forcedRaw = JSON.stringify(forced);
 
   log('');
-  log('This resets the alert latch only. The worker still fetches the REAL store on its next cron');
-  log('tick and compares against this. A push fires ONLY if that real fetch reports this variant');
-  log('as available. If it is genuinely sold out right now, expect no push -- pick a variant that');
-  log('IS currently purchasable (run `pnpm probe` if unsure which one that is).');
+  log('Two things are written:');
   log('');
-  log(`Will write: ${forcedRaw}`);
+  log(`  1. the alert latch for this variant, reset so a genuine restock can fire again:`);
+  log(`     ${key} = ${forcedRaw}`);
+  log(`  2. a one-shot test trigger the next cron pass consumes and deletes:`);
+  log(`     ${FORCE_KEY} = ${variantId}`);
+  log('');
+  log('The trigger is what actually produces a notification. Resetting the latch alone cannot:');
+  log('the worker re-reads the live store every pass, so on a sold-out product it sees no');
+  log('false -> true edge and correctly sends nothing.');
 
   if (dryRun) {
     log('');
@@ -220,6 +265,7 @@ async function main(): Promise<void> {
 
   try {
     kvPut(key, forcedRaw);
+    kvPut(FORCE_KEY, variantId);
   } catch (err) {
     console.error(err instanceof Error ? err.message : err);
     process.exitCode = 1;
@@ -228,20 +274,29 @@ async function main(): Promise<void> {
 
   log('');
   log('Done. Within ~60 seconds the next cron tick should:');
-  log('  1. fetch the store and detect this variant');
-  log('  2. if it is available: observe false -> true, and send an Expo push to every device');
-  log('     subscribed to this variant (or to all variants, for devices registered with an empty');
-  log('     variantIds list)');
-  log('  3. write back {available:true, lastAlertedAt:<now>} and start the cooldown window');
+  log('  1. fetch the live store and read every variant as usual');
+  log('  2. consume the test trigger and send a real Expo push for this variant to every device');
+  log('     subscribed to it (or to all variants, for devices registered with an empty list)');
+  log('  3. delete the trigger, so the pass after this one is silent');
+  log('');
+  log('The notification is byte-identical to a genuine restock alert -- that is deliberate, since');
+  log('an alert that looks different would not be testing the thing you care about.');
   log('');
   log('Watch a registered device for the notification, or poll GET /status on the deployed worker.');
   log('');
   log('To undo -- restore exactly what was there before this script ran -- run:');
+  // `--preview false` is not optional: wrangler.toml carries both id and preview_id, and
+  // `kv key` refuses to guess which namespace is meant.
+  const suffix = `--binding ${KV_BINDING} --preview false`;
   if (currentRaw) {
-    log(`  pnpm --filter @astra/worker exec wrangler kv key put "${key}" '${currentRaw}' --binding ${KV_BINDING}`);
+    log(`  pnpm --filter @astra/worker exec wrangler kv key put "${key}" '${currentRaw}' ${suffix}`);
   } else {
-    log(`  pnpm --filter @astra/worker exec wrangler kv key delete "${key}" --binding ${KV_BINDING}`);
+    log(`  pnpm --filter @astra/worker exec wrangler kv key delete "${key}" ${suffix}`);
   }
+  log(`  pnpm --filter @astra/worker exec wrangler kv key delete "${FORCE_KEY}" ${suffix}`);
+  log('');
+  log('The trigger deletes itself on the next pass, so the second command only matters if you');
+  log('want to cancel before the cron fires.');
   process.exitCode = 0;
 }
 

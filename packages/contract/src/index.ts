@@ -107,6 +107,13 @@ export interface RestockPushData {
   kind: 'restock';
   variantId: VariantId;
   url: string;
+  /**
+   * Set only on an alert triggered by `KV_KEYS.forceAlert`. The notification itself is otherwise
+   * byte-identical to a real one on purpose — a test alert that looks different does not test
+   * the thing you care about. Nothing in the app reads this today; it exists so a future
+   * consumer can tell them apart without changing what the user sees.
+   */
+  test?: boolean;
 }
 
 /**
@@ -156,6 +163,15 @@ export const EXPO_PUSH_RECEIPT_URL = 'https://exp.host/--/api/v2/push/getReceipt
 export const ANDROID_CHANNEL_RESTOCK = 'restock-alerts';
 export const ANDROID_CHANNEL_DETECTOR = 'detector-alerts';
 
+/**
+ * Currency assumed when the storefront does not state one.
+ *
+ * The live store's `.js` endpoint returns prices with no currency field at all, so without this
+ * a restock alert reads "699.00 — tap to open…". A bare number in the one notification that has
+ * to be unambiguous at 3am is worse than a possibly-wrong symbol, and this store prices in USD.
+ */
+export const FALLBACK_CURRENCY = 'USD';
+
 /** Consecutive detection failures before the detector itself is reported as broken. */
 export const FAILURE_ALERT_THRESHOLD = 15;
 
@@ -174,6 +190,19 @@ export const KV_KEYS = {
   variantState: (id: VariantId) => `state:variant:${id}`,
   tokenRegistry: 'registry:tokens',
   health: 'state:health',
+  /**
+   * One-shot test trigger. Holds a `VariantId`; the next successful cron pass sends a real
+   * restock alert for it and deletes the key.
+   *
+   * It exists because nothing else can demonstrate delivery while the product is sold out. The
+   * latch only fires on a genuine false->true edge from the live store, which is correct for the
+   * product and useless for answering "has a notification ever reached the phone".
+   *
+   * Deliberately a KV key rather than an HTTP endpoint: setting it requires Cloudflare account
+   * auth via wrangler, where a debug route would let anyone holding the worker URL ring the
+   * device.
+   */
+  forceAlert: 'debug:force-alert',
 } as const;
 
 /** Persisted per-variant latch state. Written only when it changes (free-tier write budget). */

@@ -1,4 +1,5 @@
 import {
+  FALLBACK_CURRENCY,
   ANDROID_CHANNEL_DETECTOR,
   ANDROID_CHANNEL_RESTOCK,
   EXPO_PUSH_BATCH_SIZE,
@@ -64,6 +65,17 @@ export interface ExpoMessage<D extends PushData = PushData> {
   priority: 'high' | 'normal';
   channelId: typeof ANDROID_CHANNEL_RESTOCK | typeof ANDROID_CHANNEL_DETECTOR;
   ttl: number;
+  /**
+   * iOS 15+ only. Without it a notification defaults to `active`, which Focus modes suppress —
+   * including Sleep Focus, i.e. exactly the 3am drop this system exists for. `time-sensitive`
+   * breaks through, lights the screen, and is Apple's documented category for information the
+   * user has explicitly asked to be alerted about.
+   *
+   * Requires the `com.apple.developer.usernotifications.time-sensitive` entitlement, declared in
+   * app.config.ts. Without that entitlement iOS silently downgrades it to `active`, so shipping
+   * this before a rebuild is a no-op rather than a regression.
+   */
+  interruptionLevel?: 'passive' | 'active' | 'time-sensitive' | 'critical';
 }
 
 export interface DispatchSummary {
@@ -108,6 +120,7 @@ export function buildMessages(
         data,
         sound: 'default',
         priority: 'high',
+        interruptionLevel: 'time-sensitive',
         channelId: ANDROID_CHANNEL_RESTOCK,
         // A restock alert is worthless an hour late; do not let Expo hold it longer.
         ttl: 900,
@@ -132,16 +145,16 @@ export function buildBody(alert: StockSnapshot): string {
 export function formatPrice(priceCents: number | null, currency: string | null): string | null {
   if (priceCents === null) return null;
   const amount = priceCents / 100;
-  if (currency !== null) {
-    try {
-      return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(amount);
-    } catch {
-      // Unknown/invalid currency code: fall through to the plain form rather than throwing
-      // inside a cron pass.
-      return `${amount.toFixed(2)} ${currency}`;
-    }
+  // The live store's `.js` endpoint states no currency, so fall back rather than render a bare
+  // number: "699.00" in a restock alert is ambiguous exactly when it matters most.
+  const resolved = currency ?? FALLBACK_CURRENCY;
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: resolved }).format(amount);
+  } catch {
+    // Unknown or invalid currency code: degrade to the plain form rather than throwing inside a
+    // cron pass, where an exception would cost the whole detection cycle.
+    return `${amount.toFixed(2)} ${resolved}`;
   }
-  return amount.toFixed(2);
 }
 
 export function chunk<T>(items: T[], size: number): T[][] {

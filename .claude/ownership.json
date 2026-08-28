@@ -1,0 +1,79 @@
+{
+  "$comment": [
+    "Single source of truth for which agent owns which paths. Prose boundaries in agent",
+    "definitions drift silently; this file is checked by `pnpm preflight`, which fails if any",
+    "tracked file has zero owners or more than one.",
+    "",
+    "This exists because the prose version already collided: `ops` claimed `wrangler.toml` and",
+    "`eas.json`, but those live at `worker/wrangler.toml` and `app/eas.json` -- inside the trees",
+    "`watcher` and `app` had been told they owned exclusively. Three agents ran concurrently",
+    "against that ambiguity and only avoided clobbering each other by luck.",
+    "",
+    "Rules:",
+    "  - Every tracked file matches exactly one `owns` glob. No exceptions, no defaults.",
+    "  - More specific globs win, so a directory owner can carve out a single file for another",
+    "    agent (that is how ops keeps deployment config that lives inside someone else's tree).",
+    "  - `orchestrator` is not a subagent. It means the top-level session only: paths whose",
+    "    change affects more than one agent, which is precisely what no single agent may decide",
+    "    alone."
+  ],
+  "owners": {
+    "orchestrator": {
+      "why": "Cross-cutting. A contract change by definition affects both the Worker and the app, so it needs an owner sitting above both -- one agent editing it unilaterally is the exact drift the contract exists to prevent. Ownership metadata is self-referential and belongs here for the same reason.",
+      "owns": [
+        "packages/contract/**",
+        ".claude/ownership.json",
+        ".npmrc",
+        "pnpm-workspace.yaml",
+        "tsconfig.base.json",
+        "pnpm-lock.yaml",
+        ".gitignore"
+      ]
+    },
+    "watcher": {
+      "why": "The Cloudflare Worker: detection adapters, KV latch, push dispatch, and their tests.",
+      "owns": [
+        "worker/src/**",
+        "worker/test/**",
+        "worker/package.json",
+        "worker/tsconfig.json"
+      ]
+    },
+    "app": {
+      "why": "The Expo client. Note this stops at source and app-level TypeScript config; the EAS build profile is deployment surface and belongs to ops.",
+      "owns": [
+        "app/src/**",
+        "app/assets/**",
+        "app/App.tsx",
+        "app/index.js",
+        "app/app.config.ts",
+        "app/app.json",
+        "app/babel.config.js",
+        "app/package.json",
+        "app/tsconfig.json"
+      ]
+    },
+    "ops": {
+      "why": "Deployment surface, operator tooling, CI, and the runbook. Two of its files deliberately live inside another agent's tree -- wrangler.toml under worker/, eas.json under app/ -- because the tool requires them there. The carve-outs below are what make that unambiguous rather than a collision.",
+      "owns": [
+        "worker/wrangler.toml",
+        "app/eas.json",
+        "scripts/bootstrap.ts",
+        "scripts/probe.ts",
+        "scripts/simulate-restock.ts",
+        "scripts/tsconfig.json",
+        "scripts/node-shim.d.ts",
+        ".github/**",
+        "README.md",
+        "package.json"
+      ]
+    },
+    "verifier": {
+      "why": "The pre-push gate and the agent definitions it enforces. Deliberately separate from ops: the thing being checked must not own the checker, or a failing check can be silenced by the same agent that caused it.",
+      "owns": [
+        "scripts/preflight.ts",
+        ".claude/agents/**"
+      ]
+    }
+  }
+}

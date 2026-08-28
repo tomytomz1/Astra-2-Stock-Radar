@@ -57,6 +57,38 @@ The alert fires on the **first** observed in-stock reading — there is no secon
 That's deliberate, not an oversight: a confirmation pass would add another ~60s cron tick to a
 buying window that can already be shorter than that.
 
+## Build profiles
+
+Three EAS profiles. The one you want is **`preview`**.
+
+| Profile | Distribution | What it's for |
+|---|---|---|
+| `development` | internal + dev client | Iterating with `expo start --dev-client` |
+| `preview` | internal (ad-hoc install link) | **The app you actually run.** Standalone, no dev server |
+| `production` | store | TestFlight / App Store, if ever wanted |
+
+`preview` installs from a link EAS prints, with no review step, and stays valid until the
+provisioning profile expires (about a year). A TestFlight build expires in 90 days, so for one
+person on their own device ad-hoc is strictly better — TestFlight solves a distribution problem
+you do not have.
+
+Each profile maps to an EAS Update channel of the same name, so `eas update --branch preview`
+ships JS-only fixes to installed `preview` builds in seconds without a rebuild. `runtimeVersion`
+is pinned to `appVersion`, so an update only ever reaches a build whose native code matches it —
+that is what stops OTA from being a way to ship a broken app.
+
+### Why not Expo Go
+
+Expo Go is a prototyping tool and cannot be the answer here, for reasons that are structural
+rather than incidental:
+
+- **Remote push throws on Android.** `expo-notifications` removed it from Expo Go in SDK 53;
+  `getDevicePushTokenAsync` raises rather than degrades. The app would be iOS-only permanently.
+- The JS bundle is served from a dev server on your machine, so the app cannot reload once you
+  close the terminal.
+- It runs inside Expo's own signed container, so it can never carry this project's native config
+  — including the notification channel the Worker addresses.
+
 ## Setup checklist
 
 Run these in order. Assumes an approved Apple Developer account and nothing else configured.
@@ -69,13 +101,82 @@ longer one.
 
 | # | Step | Command | Time |
 |---|------|---------|------|
-| 1 | Install dependencies | `pnpm install` | ~1 min |
-| 2 | Start the app build — do this first, then move straight to step 3 while it queues | `npx eas login` then `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
+| 1 | Install dependencies (from the repo root) | `pnpm install` | ~1 min |
+| 1a | Install the EAS CLI | `npm install -g eas-cli` | ~1 min |
+| 1b | Link the Expo project — **run from `app/`** | `cd app`, `eas login`, `eas init` (the id is already committed; see below) | ~2 min |
+| 2 | Start the app build — **from `app/`** — then move straight to step 3 while it queues | `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
 | 3 | Provision Cloudflare and deploy the Worker — do this while step 2 builds | `pnpm bootstrap` | ~2–5 min |
 | 4 | Add secrets (optional, see below) | none strictly required | — |
-| 5 | Ship to devices | `eas submit -p ios`; sideload the Android APK | ~5 min iOS submit + TestFlight processing (10–30 min); APK install is immediate |
+| 5 | Install on your devices | open the install link EAS printed on each device | immediate — no review, no TestFlight processing |
 | 6 | Grant permission, pick variants | in-app | ~1 min |
 | 7 | Prove the pipeline end to end | `pnpm simulate-restock <variantId>` | ~1–2 min (waits for the next cron tick) |
+
+### Step 7 detail — proving delivery
+
+```
+pnpm simulate-restock <variantId>
+```
+
+This writes two keys: it resets that variant's alert latch, **and** sets a one-shot trigger
+(`debug:force-alert`) that the next cron pass consumes, acts on, and deletes.
+
+The trigger is what actually produces a notification, and it is not optional padding. Resetting
+the latch alone cannot fire anything while the product is sold out: the Worker re-reads the live
+store every pass, sees no false→true edge, and correctly stays silent. That is right for the
+product and useless for answering "has a push ever reached this phone", which is the one question
+setup needs to answer.
+
+The alert it sends is byte-identical to a genuine restock — a test notification that looked
+different would not be testing the thing you care about. `RestockPushData.test` marks it in the
+payload for any future consumer that needs to tell them apart.
+
+It is a KV key rather than an HTTP endpoint on purpose: setting it requires Cloudflare account
+auth through `wrangler`, where a debug route would let anyone holding the Worker URL ring your
+phone. A failing detect pass ignores the trigger entirely and leaves it set, so the guarantee
+that an unreachable store never produces an alert is not weakened by the test path.
+
+### Step 1b detail — `eas init`, and which directory to run it from
+
+**Every `eas` command must run from `app/`, not the repo root.** This is a pnpm monorepo: the
+Expo app is `app/`, which is where `package.json` declares `expo` and where `eas.json` lives.
+Run `eas init` from the root and it names the project after the wrong folder, writes `app.json`
+in the wrong place, and warns `Cannot determine which native SDK version your project uses
+because the module 'expo' is not installed` — which is the giveaway that it is looking at the
+wrong directory.
+
+`npx eas` does not work: the npm package is `eas-cli` while the binary is `eas`, so npx cannot
+resolve it. Install it once instead.
+
+```
+npm install -g eas-cli
+cd app
+eas login
+eas init
+```
+
+`eas init` **cannot** write the project id into this repo: `app.config.ts` is a dynamic config,
+and the CLI refuses to edit one — it prints the id, tells you to set `extra.eas.projectId`
+yourself, and exits with an error. Linking still succeeds; only the write fails.
+
+The id is therefore committed directly in `app/app.config.ts`. That is deliberate and it is not
+a secret — it is a public project identifier. It must live in the file rather than an
+environment variable because **`eas build` runs in the cloud**, where a locally-exported
+`EAS_PROJECT_ID` does not exist; a config depending on one would produce an app that builds
+cleanly and then cannot register for push.
+
+`EAS_PROJECT_ID` still works as an override for building against a different project:
+
+```bash
+# macOS / Linux
+export EAS_PROJECT_ID=<id>
+```
+```powershell
+# Windows PowerShell — `export` is not a PowerShell command and silently does nothing
+$env:EAS_PROJECT_ID = "<id>"
+```
+
+The id is required twice over: `getExpoPushTokenAsync` cannot mint a push token without it, and
+`updates.url` is derived from it.
 
 ### Step 2 detail — build
 
@@ -84,11 +185,15 @@ npx eas login
 eas build --profile preview --platform all
 ```
 
-`preview` is the real profile name in `app/eas.json` (not `production`). It produces an
-installable Android **APK** (`android.buildType: "apk"`) and an iOS build set for **store**
-distribution (`ios.distribution: "store"`), i.e. suitable for TestFlight. This step queues a
-remote build on EAS's infrastructure — expect 10–20 minutes per platform. `eas build` gives you
-a link to watch progress; you don't need to wait on it before starting step 3.
+`preview` is the profile you want (see Build profiles above). It produces an installable Android
+**APK** and an iOS build for **internal ad-hoc** distribution — EAS registers your device's UDID
+interactively on the first run and prints an install link for each platform. No review step and
+no TestFlight processing; the build stays valid for about a year.
+
+This queues a remote build on EAS's infrastructure — expect 10–20 minutes per platform. `eas
+build` prints a link to watch progress, and you do not need to wait on it before starting step 3.
+
+Use `--profile production` instead only if you actually want TestFlight or a store listing.
 
 ### Step 3 detail — `pnpm bootstrap`
 
@@ -139,15 +244,18 @@ tokens. If unset, the Worker sends unauthenticated Expo push requests (Expo's de
 no `ADMIN_TOKEN` or similar gating `/register` — anyone with the Worker URL can register a
 token today; that's an accepted gap, not a missing step.
 
-### Step 5 detail — ship to devices
+### Step 5 detail — install on your devices
 
-```
-eas submit -p ios
-```
+`eas build` prints an install link (and QR code) per platform when each build finishes. No submit
+step and no store involved:
 
-Uses the `submit.preview` profile in `app/eas.json`. After Apple finishes processing (typically
-10–30 min), install via TestFlight on the iOS device. For Android, download the APK EAS built in
-step 2 and sideload it directly (enable "install unknown apps" for your file manager/browser).
+- **iOS** — open the link on the iPhone and install. EAS registered the device UDID during the
+  first build; a device that was not registered then needs `eas device:create` and a rebuild.
+- **Android** — open the link and install the APK directly (enable "install unknown apps" for
+  your browser or file manager).
+
+`eas submit -p ios` belongs to the `production` profile and is only for TestFlight or the App
+Store. You do not need it for a personal build.
 
 ### Steps 6–7 — verify
 
@@ -157,7 +265,7 @@ step 2 and sideload it directly (enable "install unknown apps" for your file man
 
 ```
 pnpm simulate-restock                # no args: lists current variant states from KV
-pnpm simulate-restock <variantId>    # resets that variant's alert latch
+pnpm simulate-restock <variantId>    # fires a real push for that variant on the next cron tick
 pnpm simulate-restock <variantId> --dry-run   # shows what would be written, writes nothing
 ```
 
@@ -191,7 +299,7 @@ email fallback while devices are still registering) — see "Deliberately not bu
 | `GET /status` shows `consecutiveFailures > 0` | The detector is broken, most likely because the store changed its markup. Run `pnpm probe` to see which adapter(s) fail and why — see the next row. If you can't fix the adapter/pattern yourself, `.claude/agents/watcher.md` defines an agent scoped to `worker/**` (detection adapters, KV state, dispatch) — ask it to fix the detector. |
 | Want to speed up detection, or diagnose why every adapter is failing | Run `pnpm probe`. It is **not** a required setup step — the Worker already tries the full adapter chain on every pass and uses the first one that succeeds, so a default deploy self-resolves detection with no configuration. What `pnpm probe` gets you: it fetches `PRODUCT_URL`, runs all four detection adapters, prints a per-adapter OK/FAILED report with parsed variants, and writes `worker/src/detect/config.json` pinning the winning adapter as `preferredAdapter` — saving the Worker up to three wasted fetches per cron pass, and giving you live variant ids for `pnpm simulate-restock`. If it reports every adapter failing, open `worker/src/detect/config.json` and hand-tune `soldOutPatterns` / `inStockPatterns` using the "candidate stock-related phrases" the probe prints, then re-run it until one adapter reports OK — a Worker deployed with every adapter broken will never detect a restock. `pnpm probe <url>` overrides the target (e.g. to test against a different store). |
 | Probe hits a Cloudflare/bot-challenge page | `pnpm probe` prints a specific warning when the response body looks like a challenge page (`cf-chl`, "checking your browser", captcha, etc). A plain server fetch can't pass a JS challenge — open the URL in a real browser and check whether it's only shown to new/unusual IPs. If every visitor gets it, none of the four adapters (nor the Worker built on them) can watch this store as-is. |
-| TestFlight build expired | TestFlight internal builds expire ~90 days after upload. Re-run `eas build --profile preview --platform ios` then `eas submit -p ios`. |
+| iOS app stops opening after months | An ad-hoc build stops launching when its provisioning profile expires (about a year). Re-run `eas build --profile preview --platform ios` and install the new link. A `production`/TestFlight build instead expires ~90 days after upload. |
 | Push never lands / Expo reports `DeviceNotRegistered` | The Worker already prunes dead tokens from its registry on `DeviceNotRegistered` receipts — if yours got pruned, just re-open the app so it re-registers a fresh token (uninstall/reinstall or a token refresh both trigger this). |
 | Testing on a simulator/emulator and nothing arrives | Expected — push tokens do not work on iOS Simulator or most Android emulator images. Use a real device for steps 6–7. |
 | `pnpm bootstrap` fails at the wrangler-auth check | You're not logged in (or the network can't reach Cloudflare) — the printed message tells you which command to run (`npx wrangler login`) and to re-run `pnpm bootstrap` after. It never attempts to log you in itself. |
@@ -199,10 +307,51 @@ email fallback while devices are still registering) — see "Deliberately not bu
 ## Development
 
 ```
+pnpm preflight                                    # run this before every push — see below
 pnpm typecheck                                   # all workspace packages + scripts/
 pnpm test                                         # worker unit tests (vitest, mocked fetch, no network)
 pnpm --filter @astra/worker exec wrangler dev --test-scheduled
 ```
+
+### `pnpm preflight` — the pre-push gate
+
+Runs the exact command sequence CI runs, plus structural checks that typecheck and tests cannot
+express. It exists because every defect that has reached this repo's remote was found by
+*running* something, not by reading it:
+
+| Check | The bug it prevents |
+|---|---|
+| No contract value hardcoded outside the contract | The Worker sent Android `channelId: 'restock'` while the app created `'restock-alerts'`; Android silently downgrades importance and sound on a mismatch, so the one alert this project exists to deliver could have arrived with no sound |
+| No script name shadowed by a pnpm builtin | A script named `setup` is unreachable via `pnpm setup`, which runs pnpm's own command and writes `PNPM_HOME` into your shell profile |
+| Every `pnpm` command in this README exists | Documentation drifting past the code |
+| Preflight covers every command CI runs | A local gate that checks less than CI produces confidence CI then contradicts |
+| No secrets or real infrastructure ids committed | Credential leaks |
+
+The gate is itself regression-tested: each of the above was re-introduced deliberately and
+confirmed to fail the check before this was committed.
+
+`--structural-only` skips the build and test steps (CI uses this, since it runs those as
+separate named steps for per-step failure attribution). `--verbose` shows detail for passing
+checks too.
+
+For the judgment-level checks a script cannot make — a shared value that *should* be in the
+contract but isn't yet, a README claim that no longer matches the code — see
+`.claude/agents/verifier.md`.
+
+### Who owns what
+
+This repo was built by several agents working in parallel, and `.claude/ownership.json` records
+which one owns which paths. Preflight fails if any tracked file has zero owners or more than
+one, so the boundaries are checked rather than remembered — the prose version had already
+collided twice, claiming `worker/wrangler.toml` and `app/eas.json` for two owners each.
+
+Two boundaries are deliberate and worth knowing:
+
+- **`packages/contract/**` belongs to no agent.** A contract change affects the Worker and the
+  app by definition, so it needs an owner above both. One agent editing it alone is the drift
+  the contract exists to prevent.
+- **`ops` owns the deployment code; `verifier` owns the gate that checks it.** The agent that
+  causes a failing check must not be the one able to silence it.
 
 The last command runs the Worker locally and lets you trigger the cron path without waiting for
 a real minute to tick: with `wrangler dev` running, hit `http://localhost:8787/__scheduled` (add

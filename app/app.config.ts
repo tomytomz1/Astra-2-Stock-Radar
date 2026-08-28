@@ -1,3 +1,4 @@
+import { ANDROID_CHANNEL_RESTOCK } from '@astra/contract';
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 /**
@@ -8,13 +9,37 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
  */
 const workerUrl = process.env.EXPO_PUBLIC_WORKER_URL ?? null;
 
-export default ({ config }: ConfigContext): ExpoConfig => ({
+export default ({ config }: ConfigContext): ExpoConfig => {
+  /**
+   * Resolved once and reused: it identifies the project for push tokens AND for OTA updates,
+   * and the two must not be allowed to disagree. `eas init` / `eas update:configure` cannot
+   * write into a dynamic config, so both are wired by hand from this one value.
+   */
+  /**
+   * The EAS project id, committed deliberately. It is a public identifier, not a secret.
+   *
+   * It has to live here rather than in an env var: `eas build` runs in the cloud, where a
+   * locally-exported `EAS_PROJECT_ID` does not exist, so a config that depended on one would
+   * produce an app that builds cleanly and then cannot register for push — the precise silent
+   * failure this project exists to avoid. `eas init` cannot write it for us either; it refuses
+   * to edit a dynamic config and exits with an error.
+   *
+   * The env var and static-config paths remain as overrides for building against a different
+   * project.
+   */
+  const easProjectId: string | undefined =
+    process.env.EAS_PROJECT_ID ??
+    (config.extra?.eas?.projectId as string | undefined) ??
+    '0d287b59-d5ea-49f2-8df5-39ac6c12497e';
+
+  return {
   ...config,
   name: 'Astra Radar',
   slug: 'astra-2-stock-radar',
   scheme: 'astra-radar',
   version: '1.0.0',
   orientation: 'portrait',
+  icon: './assets/icon.png',
   userInterfaceStyle: 'dark',
   backgroundColor: '#0b0f14',
   ios: {
@@ -25,29 +50,78 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // `expo-notifications` plugin below adds the `aps-environment` entitlement needed for
     // remote push automatically; no other Info.plist keys are required for foreground/tap
     // notification handling.
+    /**
+     * Time Sensitive notifications. Without this entitlement iOS downgrades the Worker's
+     * `interruptionLevel: 'time-sensitive'` back to `active`, which Focus modes suppress — so a
+     * restock at 3am with Sleep Focus on would be held back until morning, which is the one
+     * outcome this project exists to prevent.
+     *
+     * This is native configuration: it takes effect on the next `eas build`, not via
+     * `eas update`.
+     */
+    entitlements: {
+      ...config.ios?.entitlements,
+      'com.apple.developer.usernotifications.time-sensitive': true,
+    },
     infoPlist: {
       ...config.ios?.infoPlist,
+      /**
+       * Apple's export-compliance declaration. The app uses only standard HTTPS/TLS and no
+       * custom cryptography, which is exempt. Declaring it here stops `eas build` and
+       * `eas submit` prompting for it on every single run.
+       */
+      ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {
     ...config.android,
     package: 'gg.astraradar.app',
     adaptiveIcon: {
+      /**
+       * `foregroundImage` is required, not optional. An adaptiveIcon block carrying only a
+       * background colour fails the Android build outright at icon generation — and does so
+       * only on Android, which is why the iOS build of the same commit succeeded.
+       */
+      foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#0b0f14',
     },
   },
   extra: {
     ...config.extra,
     workerUrl,
+    eas: {
+      ...config.extra?.eas,
+      /**
+       * `getExpoPushTokenAsync` needs this, and `src/notifications.ts` reads it from exactly
+       * here. Left undefined, push registration fails with a clear error rather than crashing —
+       * `notifications.ts` only passes the option when it is set.
+       */
+      projectId: easProjectId,
+    },
   },
+  /**
+   * OTA updates. `runtimeVersion` is the safety property that makes this sane: an update only
+   * reaches builds whose native code matches, so a JS bundle can never land on a binary missing
+   * the native module it needs. Omitted entirely when no project id is set, because a config
+   * carrying `updates.url` for a project that does not exist is worse than one carrying neither.
+   */
+  ...(easProjectId
+    ? {
+        updates: { url: `https://u.expo.dev/${easProjectId}` },
+        runtimeVersion: { policy: 'appVersion' as const },
+      }
+    : {}),
   plugins: [
     ...(config.plugins ?? []),
     [
       'expo-notifications',
       {
         color: '#4da3ff',
-        defaultChannel: 'restock-alerts',
+        // From the contract, never a literal: the Worker names this channel in every outgoing
+        // push, and Android silently downgrades importance and sound on a mismatch.
+        defaultChannel: ANDROID_CHANNEL_RESTOCK,
       },
     ],
   ],
-});
+  };
+};
