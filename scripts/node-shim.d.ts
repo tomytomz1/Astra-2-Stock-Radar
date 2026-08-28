@@ -52,6 +52,7 @@ declare module 'node:child_process' {
     options: {
       encoding: 'utf8';
       cwd?: string;
+      shell?: boolean;
       stdio?: Array<'pipe' | 'ignore' | 'inherit'>;
       timeout?: number;
     },

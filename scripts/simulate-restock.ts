@@ -60,17 +60,18 @@ interface WranglerResult {
  * node_modules layout.
  */
 /**
- * Windows resolves `pnpm`, `npx` and friends to `.cmd` shims, and Node's `execFileSync` does not
- * apply PATHEXT resolution, so a bare name throws ENOENT there. Suffixing is preferable to
- * `shell: true`, which would reintroduce quoting and injection concerns for no benefit.
+ * Windows resolves `pnpm` and `npx` to `.cmd` shims, and since Node's CVE-2024-27980 fix
+ * `execFile` refuses to run a `.cmd` at all — it fails with EINVAL whether or not the name is
+ * suffixed. The shell has to do the resolution, so `shell: true` is required on Windows rather
+ * than merely convenient. Every argument passed here is an internal constant with no spaces or
+ * metacharacters, so shell quoting carries no injection risk.
  */
-function binary(name: string): string {
-  return process.platform === 'win32' ? `${name}.cmd` : name;
-}
+const IS_WINDOWS = process.platform === 'win32';
 
 function runWrangler(args: string[]): WranglerResult {
   try {
-    const stdout = execFileSync(binary('pnpm'), ['--filter', '@astra/worker', 'exec', 'wrangler', ...args], {
+    const stdout = execFileSync('pnpm', ['--filter', '@astra/worker', 'exec', 'wrangler', ...args], {
+      shell: IS_WINDOWS,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });

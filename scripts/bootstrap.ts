@@ -102,21 +102,22 @@ interface WranglerResult {
  * the way `pnpm --filter @astra/worker deploy` and `simulate-restock.ts` both find it.
  */
 /**
- * Windows resolves `pnpm` to a `.cmd` shim, and Node's `execFileSync` does not apply PATHEXT
- * resolution, so a bare name throws ENOENT there. Suffixing is preferable to `shell: true`,
- * which would reintroduce quoting and injection concerns for no benefit.
+ * Windows resolves `pnpm` and `npx` to `.cmd` shims, and since Node's CVE-2024-27980 fix
+ * `execFile` refuses to run a `.cmd` at all — it fails with EINVAL whether or not the name is
+ * suffixed. The shell has to do the resolution, so `shell: true` is required on Windows rather
+ * than merely convenient. Every argument passed here is an internal constant with no spaces or
+ * metacharacters, so shell quoting carries no injection risk.
  */
-function binary(name: string): string {
-  return process.platform === 'win32' ? `${name}.cmd` : name;
-}
+const IS_WINDOWS = process.platform === 'win32';
 
 function runWrangler(args: string[], timeoutMs?: number): WranglerResult {
   try {
     const stdout = execFileSync(
-      binary('pnpm'),
+      'pnpm',
       ['--filter', '@astra/worker', 'exec', 'wrangler', ...args],
       {
         encoding: 'utf8',
+        shell: IS_WINDOWS,
         stdio: ['ignore', 'pipe', 'pipe'],
         ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
       },

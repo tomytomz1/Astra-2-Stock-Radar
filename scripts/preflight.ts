@@ -24,9 +24,12 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+// `new URL(...).pathname` yields `/C:/Users/...` on Windows, which join() then turns into
+// `C:\C:\Users\...`. fileURLToPath is the only correct conversion.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VERBOSE = process.argv.includes('--verbose');
 /**
  * CI already runs the build steps as separate named steps, so it gets clear per-step failure
@@ -51,18 +54,19 @@ function record(name: string, ok: boolean, detail: string[] = []): void {
 }
 
 /**
- * Windows resolves `pnpm`, `npx` and friends to `.cmd` shims, and Node's `execFileSync` does not
- * apply PATHEXT resolution, so a bare name throws ENOENT there. Suffixing is preferable to
- * `shell: true`, which would reintroduce quoting and injection concerns for no benefit.
+ * Windows resolves `pnpm` and `npx` to `.cmd` shims, and since Node's CVE-2024-27980 fix
+ * `execFile` refuses to run a `.cmd` at all — it fails with EINVAL whether or not the name is
+ * suffixed. The shell has to do the resolution, so `shell: true` is required on Windows rather
+ * than merely convenient. Every argument passed here is an internal constant with no spaces or
+ * metacharacters, so shell quoting carries no injection risk.
  */
-function binary(name: string): string {
-  return process.platform === 'win32' ? `${name}.cmd` : name;
-}
+const IS_WINDOWS = process.platform === 'win32';
 
 function run(cmd: string, args: string[]): { ok: boolean; output: string } {
   try {
-    const output = execFileSync(binary(cmd), args, {
+    const output = execFileSync(cmd, args, {
       cwd: ROOT,
+      shell: IS_WINDOWS,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10 * 60_000,
@@ -251,32 +255,56 @@ function checkCiParity(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * `execFileSync('pnpm', ...)` throws ENOENT on Windows: pnpm, npx and npm are `.cmd` shims
- * there, and execFile does not apply PATHEXT resolution. Every call site must go through
- * `binary()`.
+ * On Windows, pnpm and npx are `.cmd` shims and Node's `execFile` refuses to run them at all
+ * since the CVE-2024-27980 fix — it fails with EINVAL whether or not the name carries a `.cmd`
+ * suffix. Only `shell: true` works. Every call site must set it (via IS_WINDOWS).
  *
- * This is invisible from Linux and macOS, where the bare name resolves fine — which is exactly
- * why it needs a check rather than reviewer attention. All three scripts shipped broken for
- * Windows before this existed.
+ * This is invisible from Linux and macOS, where the bare name resolves fine. All three scripts
+ * shipped broken for Windows twice: once with no handling at all, then again with a `.cmd`
+ * suffix that does not actually work on modern Node. Hence a check rather than care.
  */
 function checkWindowsSafeCommands(): void {
   const offenders: string[] = [];
   // Built by concatenation so this pattern does not match its own source line.
-  const callPattern = new RegExp('execFileSync' + '\\(\\s*([^,]+),', 'g');
+  const callPattern = new RegExp('execFileSync' + '\\(', 'g');
   for (const file of walk(join(ROOT, 'scripts'))) {
-    // `.d.ts` files declare the signature rather than calling it.
     if (file.endsWith('.d.ts')) continue;
     const source = stripComments(readFileSync(file, 'utf8'));
     for (const m of source.matchAll(callPattern)) {
-      const arg = (m[1] as string).trim();
-      if (arg.startsWith('binary(')) continue;
-      // Message deliberately avoids the literal call pattern, or it matches itself.
+      // The options object is the third argument; scan to the end of the call.
+      const window = source.slice(m.index, m.index + 600);
+      if (window.includes('shell:')) continue;
       offenders.push(
-        `${relative(ROOT, file)}: bare command \`${arg}\` passed to execFile — wrap it in binary() or it throws ENOENT on Windows`,
+        `${relative(ROOT, file)}: a child-process call omits the shell option — it fails with EINVAL on Windows`,
       );
     }
   }
   record('external commands resolve on Windows', offenders.length === 0, offenders);
+}
+
+// ---------------------------------------------------------------------------
+// 8c: file paths must be derived from import.meta.url correctly
+// ---------------------------------------------------------------------------
+
+/**
+ * `new URL('..', import.meta.url).pathname` returns `/C:/Users/...` on Windows, so joining it
+ * produces `C:\C:\Users\...` and every subsequent read fails. `fileURLToPath` is the only
+ * correct conversion. Narrow on purpose: `.pathname` on a *web* URL is perfectly fine — the
+ * probe uses it to parse a product slug — so this flags only the `import.meta.url` case.
+ */
+function checkModulePathsUseFileURLToPath(): void {
+  const offenders: string[] = [];
+  for (const file of walk(join(ROOT, 'scripts'))) {
+    if (file.endsWith('.d.ts')) continue;
+    const source = stripComments(readFileSync(file, 'utf8'));
+    for (const m of source.matchAll(/new URL\([^)]*import\.meta\.url[^)]*\)\s*\.pathname/g)) {
+      void m;
+      offenders.push(
+        `${relative(ROOT, file)}: a module path is taken from .pathname — use fileURLToPath, or it becomes C:\\C:\\... on Windows`,
+      );
+    }
+  }
+  record('module paths use fileURLToPath', offenders.length === 0, offenders);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +419,7 @@ function main(): void {
   checkDocumentedCommandsExist();
   checkCiParity();
   checkWindowsSafeCommands();
+  checkModulePathsUseFileURLToPath();
   checkOwnershipIsUnambiguous();
   checkNoSecrets();
 
