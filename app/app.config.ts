@@ -50,6 +50,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // `expo-notifications` plugin below adds the `aps-environment` entitlement needed for
     // remote push automatically; no other Info.plist keys are required for foreground/tap
     // notification handling.
+    /**
+     * Time Sensitive notifications. Without this entitlement iOS downgrades the Worker's
+     * `interruptionLevel: 'time-sensitive'` back to `active`, which Focus modes suppress — so a
+     * restock at 3am with Sleep Focus on would be held back until morning, which is the one
+     * outcome this project exists to prevent.
+     *
+     * This is native configuration: it takes effect on the next `eas build`, not via
+     * `eas update`.
+     */
+    entitlements: {
+      ...config.ios?.entitlements,
+      'com.apple.developer.usernotifications.time-sensitive': true,
+    },
     infoPlist: {
       ...config.ios?.infoPlist,
       /**

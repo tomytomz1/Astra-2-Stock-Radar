@@ -65,6 +65,17 @@ export interface ExpoMessage<D extends PushData = PushData> {
   priority: 'high' | 'normal';
   channelId: typeof ANDROID_CHANNEL_RESTOCK | typeof ANDROID_CHANNEL_DETECTOR;
   ttl: number;
+  /**
+   * iOS 15+ only. Without it a notification defaults to `active`, which Focus modes suppress —
+   * including Sleep Focus, i.e. exactly the 3am drop this system exists for. `time-sensitive`
+   * breaks through, lights the screen, and is Apple's documented category for information the
+   * user has explicitly asked to be alerted about.
+   *
+   * Requires the `com.apple.developer.usernotifications.time-sensitive` entitlement, declared in
+   * app.config.ts. Without that entitlement iOS silently downgrades it to `active`, so shipping
+   * this before a rebuild is a no-op rather than a regression.
+   */
+  interruptionLevel?: 'passive' | 'active' | 'time-sensitive' | 'critical';
 }
 
 export interface DispatchSummary {
@@ -109,6 +120,7 @@ export function buildMessages(
         data,
         sound: 'default',
         priority: 'high',
+        interruptionLevel: 'time-sensitive',
         channelId: ANDROID_CHANNEL_RESTOCK,
         // A restock alert is worthless an hour late; do not let Expo hold it longer.
         ttl: 900,
