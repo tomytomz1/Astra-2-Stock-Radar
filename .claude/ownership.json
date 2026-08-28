@@ -56,7 +56,7 @@
     "ops": {
       "why": "Deployment surface, operator tooling, CI, and the runbook. Two of its files deliberately live inside another agent's tree -- wrangler.toml under worker/, eas.json under app/ -- because the tool requires them there. The carve-outs below are what make that unambiguous rather than a collision.",
       "owns": [
-        "worker/wrangler.toml",
+        "worker/wrangler.toml.example",
         "app/eas.json",
         "scripts/bootstrap.ts",
         "scripts/probe.ts",

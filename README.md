@@ -308,6 +308,29 @@ pnpm simulate-restock --heartbeat
 
 That back-dates `lastHeartbeatAt` so the next cron pass sends one.
 
+## `worker/wrangler.toml` is generated, not committed
+
+The repo ships `worker/wrangler.toml.example` with `REPLACE_WITH_...` placeholders.
+`pnpm bootstrap` copies it to `worker/wrangler.toml` on first run and patches in this
+deployment's real Cloudflare KV namespace ids. The generated file is **gitignored**.
+
+It used to be tracked, and that was a mistake in two directions. Every checkout was permanently
+dirty in that one file, so any change to it — a comment tidy-up was enough — made the next
+`git pull` abort with *"your local changes would be overwritten by merge"*. And a tracked file
+holding a real namespace id is one stray `git add -A` away from being public.
+
+**Upgrading from a checkout that still tracks it:** back the file up first, because the incoming
+commit deletes the tracked copy.
+
+```powershell
+copy worker\wrangler.toml worker\wrangler.toml.bak
+git pull
+```
+
+If `worker/wrangler.toml` is gone afterwards, restore the `.bak` or run `pnpm bootstrap`, which
+regenerates it from the template and re-fetches the ids. Nothing here is one-way: the ids are
+always recoverable with `pnpm --filter @astra/worker exec wrangler kv namespace list`.
+
 ## Deploying the Worker
 
 ```bash
