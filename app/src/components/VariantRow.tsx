@@ -11,9 +11,17 @@ interface Props {
   watching: boolean;
   /** When set, the row becomes a checkbox toggle (used by the variant picker sheet). */
   onToggle?: () => void;
+  /**
+   * When set (and `onToggle` is not), tapping the row opens the store page for this variant.
+   *
+   * Every row is tappable, not just in-stock ones: the whole point is being able to act the
+   * instant a badge flips, and a row that only becomes tappable at that moment is a control
+   * nobody has ever practised using.
+   */
+  onPress?: () => void;
 }
 
-export function VariantRow({ snapshot, watching, onToggle }: Props) {
+export function VariantRow({ snapshot, watching, onToggle, onPress }: Props) {
   const price = formatPrice(snapshot.priceCents, snapshot.currency);
   const content = (
     <View style={styles.row}>
@@ -39,13 +47,25 @@ export function VariantRow({ snapshot, watching, onToggle }: Props) {
             {snapshot.available ? 'In stock' : 'Out of stock'}
           </Text>
         </View>
+        {!onToggle && onPress ? <Text style={styles.chevron}>›</Text> : null}
       </View>
     </View>
   );
 
-  if (onToggle) {
+  // `onToggle` wins: in the picker sheet a tap must select, never navigate away mid-selection.
+  const handler = onToggle ?? onPress;
+  if (handler) {
     return (
-      <Pressable onPress={onToggle} style={({ pressed }) => pressed && styles.pressed}>
+      <Pressable
+        onPress={handler}
+        accessibilityRole="button"
+        accessibilityLabel={
+          onToggle
+            ? `${watching ? 'Stop watching' : 'Watch'} ${snapshot.title}`
+            : `Open ${snapshot.title} on the store`
+        }
+        style={({ pressed }) => pressed && styles.pressed}
+      >
         {content}
       </Pressable>
     );
@@ -99,6 +119,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+  },
+  chevron: {
+    color: colors.textMuted,
+    fontSize: 22,
+    marginLeft: 2,
+    marginTop: -2,
   },
   watchingDot: {
     width: 8,

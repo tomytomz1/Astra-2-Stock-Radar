@@ -13,6 +13,27 @@ export const PRODUCT_URL =
 export const PRODUCT_TITLE = 'REDMAGIC Astra 2 Gaming Tablet';
 
 /**
+ * Deep link straight to one purchasable configuration.
+ *
+ * Shopify preselects a variant from `?variant=<id>`, and the ids this system carries ARE Shopify
+ * variant ids (the `shopify-js` / `shopify-json` adapters read them from the store's own JSON), so
+ * the link lands on the exact colour and capacity rather than the product's default.
+ *
+ * That matters only in the sixty seconds this whole system exists for: arriving on the page with
+ * the wrong configuration selected costs taps at the moment stock is disappearing, and risks
+ * buying the wrong one. Degrades safely -- an id the store does not recognise just shows the
+ * product page with its default variant, which is exactly where the bare URL would have landed.
+ *
+ * The `heuristic` adapter has no real variant ids (it invents slugs), so a deployment relying on
+ * it gets the harmless fallback rather than a broken link.
+ */
+export function productUrlForVariant(productUrl: string, variantId: VariantId): string {
+  if (variantId.trim() === '') return productUrl;
+  const separator = productUrl.includes('?') ? '&' : '?';
+  return `${productUrl}${separator}variant=${encodeURIComponent(variantId)}`;
+}
+
+/**
  * Stable identifier for a purchasable configuration, e.g. `astra2-silver-16-512`.
  *
  * Derived from the store's own variant id where one exists (Shopify numeric ids are stable
