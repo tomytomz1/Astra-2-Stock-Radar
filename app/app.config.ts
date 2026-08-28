@@ -9,7 +9,16 @@ import type { ConfigContext, ExpoConfig } from 'expo/config';
  */
 const workerUrl = process.env.EXPO_PUBLIC_WORKER_URL ?? null;
 
-export default ({ config }: ConfigContext): ExpoConfig => ({
+export default ({ config }: ConfigContext): ExpoConfig => {
+  /**
+   * Resolved once and reused: it identifies the project for push tokens AND for OTA updates,
+   * and the two must not be allowed to disagree. `eas init` / `eas update:configure` cannot
+   * write into a dynamic config, so both are wired by hand from this one value.
+   */
+  const easProjectId: string | undefined =
+    process.env.EAS_PROJECT_ID ?? (config.extra?.eas?.projectId as string | undefined);
+
+  return {
   ...config,
   name: 'Astra Radar',
   slug: 'astra-2-stock-radar',
@@ -44,17 +53,24 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       ...config.extra?.eas,
       /**
        * `getExpoPushTokenAsync` needs this, and `src/notifications.ts` reads it from exactly
-       * here. `eas init` writes it into `app.json` for a static config, but this project uses a
-       * dynamic config (`app.config.ts`), which the EAS CLI cannot edit — it prints the id and
-       * expects you to wire it yourself. Both routes are honoured: the spread above picks up an
-       * `app.json` if `eas init` creates one, and `EAS_PROJECT_ID` works when it doesn't.
-       *
-       * Left undefined, push registration fails with an unhelpful error rather than crashing —
+       * here. Left undefined, push registration fails with a clear error rather than crashing —
        * `notifications.ts` only passes the option when it is set.
        */
-      projectId: process.env.EAS_PROJECT_ID ?? config.extra?.eas?.projectId,
+      projectId: easProjectId,
     },
   },
+  /**
+   * OTA updates. `runtimeVersion` is the safety property that makes this sane: an update only
+   * reaches builds whose native code matches, so a JS bundle can never land on a binary missing
+   * the native module it needs. Omitted entirely when no project id is set, because a config
+   * carrying `updates.url` for a project that does not exist is worse than one carrying neither.
+   */
+  ...(easProjectId
+    ? {
+        updates: { url: `https://u.expo.dev/${easProjectId}` },
+        runtimeVersion: { policy: 'appVersion' as const },
+      }
+    : {}),
   plugins: [
     ...(config.plugins ?? []),
     [
@@ -67,4 +83,5 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
   ],
-});
+  };
+};

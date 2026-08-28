@@ -57,39 +57,37 @@ The alert fires on the **first** observed in-stock reading — there is no secon
 That's deliberate, not an oversight: a confirmation pass would add another ~60s cron tick to a
 buying window that can already be shorter than that.
 
-## Fastest path — iOS via Expo Go, no Apple credentials
+## Build profiles
 
-If you have an iPhone and just want alerts working today, you can skip the build entirely.
-Expo Go runs the app from a QR code with no compilation, no Apple Developer account, and no
-TestFlight.
+Three EAS profiles. The one you want is **`preview`**.
 
-**iOS only.** In `expo-notifications` (SDK 53+), `getDevicePushTokenAsync` *throws* under Expo Go
-on Android — remote push was removed from Expo Go there. On iOS it only logs a warning and still
-returns a token, so push works. Android needs a real development build.
+| Profile | Distribution | What it's for |
+|---|---|---|
+| `development` | internal + dev client | Iterating with `expo start --dev-client` |
+| `preview` | internal (ad-hoc install link) | **The app you actually run.** Standalone, no dev server |
+| `production` | store | TestFlight / App Store, if ever wanted |
 
-```
-npx expo login                 # free Expo account — Apple is not involved
-npx eas init                   # prints your projectId
-export EAS_PROJECT_ID=<the id it printed>
-npx wrangler login
-pnpm bootstrap                 # Worker live and polling
-export EXPO_PUBLIC_WORKER_URL=<the worker URL bootstrap printed>
-npx expo start                 # scan the QR code with Expo Go
-```
+`preview` installs from a link EAS prints, with no review step, and stays valid until the
+provisioning profile expires (about a year). A TestFlight build expires in 90 days, so for one
+person on their own device ad-hoc is strictly better — TestFlight solves a distribution problem
+you do not have.
 
-Then grant notification permission in the app, pick your variants, and run
-`pnpm simulate-restock` to prove a push actually lands.
+Each profile maps to an EAS Update channel of the same name, so `eas update --branch preview`
+ships JS-only fixes to installed `preview` builds in seconds without a rebuild. `runtimeVersion`
+is pinned to `appVersion`, so an update only ever reaches a build whose native code matches it —
+that is what stops OTA from being a way to ship a broken app.
 
-`eas init` cannot write `projectId` into this project's config automatically — `app.config.ts`
-is a dynamic config, which the EAS CLI reads but never edits. `EAS_PROJECT_ID` is the wiring for
-that; if you later add an `app.json`, its `extra.eas.projectId` is picked up too.
+### Why not Expo Go
 
-**What this costs you:** the notification itself is delivered by APNs to Expo Go, so the banner,
-sound, and the variant and price in the body all arrive whether or not your dev server is still
-running. Only *tapping* it needs the server, since Expo Go reloads the JS bundle on open. For a
-stock alert — where the actionable information is in the banner and you are going to open the
-store yourself anyway — that is a cosmetic limitation. Do the full build below when you want
-permanence or Android.
+Expo Go is a prototyping tool and cannot be the answer here, for reasons that are structural
+rather than incidental:
+
+- **Remote push throws on Android.** `expo-notifications` removed it from Expo Go in SDK 53;
+  `getDevicePushTokenAsync` raises rather than degrades. The app would be iOS-only permanently.
+- The JS bundle is served from a dev server on your machine, so the app cannot reload once you
+  close the terminal.
+- It runs inside Expo's own signed container, so it can never carry this project's native config
+  — including the notification channel the Worker addresses.
 
 ## Setup checklist
 
@@ -107,7 +105,7 @@ longer one.
 | 2 | Start the app build — do this first, then move straight to step 3 while it queues | `npx eas login` then `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
 | 3 | Provision Cloudflare and deploy the Worker — do this while step 2 builds | `pnpm bootstrap` | ~2–5 min |
 | 4 | Add secrets (optional, see below) | none strictly required | — |
-| 5 | Ship to devices | `eas submit -p ios`; sideload the Android APK | ~5 min iOS submit + TestFlight processing (10–30 min); APK install is immediate |
+| 5 | Install on your devices | open the install link EAS printed on each device | immediate — no review, no TestFlight processing |
 | 6 | Grant permission, pick variants | in-app | ~1 min |
 | 7 | Prove the pipeline end to end | `pnpm simulate-restock <variantId>` | ~1–2 min (waits for the next cron tick) |
 
@@ -118,11 +116,15 @@ npx eas login
 eas build --profile preview --platform all
 ```
 
-`preview` is the real profile name in `app/eas.json` (not `production`). It produces an
-installable Android **APK** (`android.buildType: "apk"`) and an iOS build set for **store**
-distribution (`ios.distribution: "store"`), i.e. suitable for TestFlight. This step queues a
-remote build on EAS's infrastructure — expect 10–20 minutes per platform. `eas build` gives you
-a link to watch progress; you don't need to wait on it before starting step 3.
+`preview` is the profile you want (see Build profiles above). It produces an installable Android
+**APK** and an iOS build for **internal ad-hoc** distribution — EAS registers your device's UDID
+interactively on the first run and prints an install link for each platform. No review step and
+no TestFlight processing; the build stays valid for about a year.
+
+This queues a remote build on EAS's infrastructure — expect 10–20 minutes per platform. `eas
+build` prints a link to watch progress, and you do not need to wait on it before starting step 3.
+
+Use `--profile production` instead only if you actually want TestFlight or a store listing.
 
 ### Step 3 detail — `pnpm bootstrap`
 
@@ -173,15 +175,18 @@ tokens. If unset, the Worker sends unauthenticated Expo push requests (Expo's de
 no `ADMIN_TOKEN` or similar gating `/register` — anyone with the Worker URL can register a
 token today; that's an accepted gap, not a missing step.
 
-### Step 5 detail — ship to devices
+### Step 5 detail — install on your devices
 
-```
-eas submit -p ios
-```
+`eas build` prints an install link (and QR code) per platform when each build finishes. No submit
+step and no store involved:
 
-Uses the `submit.preview` profile in `app/eas.json`. After Apple finishes processing (typically
-10–30 min), install via TestFlight on the iOS device. For Android, download the APK EAS built in
-step 2 and sideload it directly (enable "install unknown apps" for your file manager/browser).
+- **iOS** — open the link on the iPhone and install. EAS registered the device UDID during the
+  first build; a device that was not registered then needs `eas device:create` and a rebuild.
+- **Android** — open the link and install the APK directly (enable "install unknown apps" for
+  your browser or file manager).
+
+`eas submit -p ios` belongs to the `production` profile and is only for TestFlight or the App
+Store. You do not need it for a personal build.
 
 ### Steps 6–7 — verify
 
@@ -225,7 +230,7 @@ email fallback while devices are still registering) — see "Deliberately not bu
 | `GET /status` shows `consecutiveFailures > 0` | The detector is broken, most likely because the store changed its markup. Run `pnpm probe` to see which adapter(s) fail and why — see the next row. If you can't fix the adapter/pattern yourself, `.claude/agents/watcher.md` defines an agent scoped to `worker/**` (detection adapters, KV state, dispatch) — ask it to fix the detector. |
 | Want to speed up detection, or diagnose why every adapter is failing | Run `pnpm probe`. It is **not** a required setup step — the Worker already tries the full adapter chain on every pass and uses the first one that succeeds, so a default deploy self-resolves detection with no configuration. What `pnpm probe` gets you: it fetches `PRODUCT_URL`, runs all four detection adapters, prints a per-adapter OK/FAILED report with parsed variants, and writes `worker/src/detect/config.json` pinning the winning adapter as `preferredAdapter` — saving the Worker up to three wasted fetches per cron pass, and giving you live variant ids for `pnpm simulate-restock`. If it reports every adapter failing, open `worker/src/detect/config.json` and hand-tune `soldOutPatterns` / `inStockPatterns` using the "candidate stock-related phrases" the probe prints, then re-run it until one adapter reports OK — a Worker deployed with every adapter broken will never detect a restock. `pnpm probe <url>` overrides the target (e.g. to test against a different store). |
 | Probe hits a Cloudflare/bot-challenge page | `pnpm probe` prints a specific warning when the response body looks like a challenge page (`cf-chl`, "checking your browser", captcha, etc). A plain server fetch can't pass a JS challenge — open the URL in a real browser and check whether it's only shown to new/unusual IPs. If every visitor gets it, none of the four adapters (nor the Worker built on them) can watch this store as-is. |
-| TestFlight build expired | TestFlight internal builds expire ~90 days after upload. Re-run `eas build --profile preview --platform ios` then `eas submit -p ios`. |
+| iOS app stops opening after months | An ad-hoc build stops launching when its provisioning profile expires (about a year). Re-run `eas build --profile preview --platform ios` and install the new link. A `production`/TestFlight build instead expires ~90 days after upload. |
 | Push never lands / Expo reports `DeviceNotRegistered` | The Worker already prunes dead tokens from its registry on `DeviceNotRegistered` receipts — if yours got pruned, just re-open the app so it re-registers a fresh token (uninstall/reinstall or a token refresh both trigger this). |
 | Testing on a simulator/emulator and nothing arrives | Expected — push tokens do not work on iOS Simulator or most Android emulator images. Use a real device for steps 6–7. |
 | `pnpm bootstrap` fails at the wrangler-auth check | You're not logged in (or the network can't reach Cloudflare) — the printed message tells you which command to run (`npx wrangler login`) and to re-run `pnpm bootstrap` after. It never attempts to log you in itself. |
