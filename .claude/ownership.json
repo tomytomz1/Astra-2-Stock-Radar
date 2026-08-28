@@ -42,6 +42,7 @@
       "why": "The Expo client. Note this stops at source and app-level TypeScript config; the EAS build profile is deployment surface and belongs to ops.",
       "owns": [
         "app/src/**",
+        "app/assets/**",
         "app/App.tsx",
         "app/app.config.ts",
         "app/app.json",

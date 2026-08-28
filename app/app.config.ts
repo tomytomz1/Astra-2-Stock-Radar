@@ -39,6 +39,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   scheme: 'astra-radar',
   version: '1.0.0',
   orientation: 'portrait',
+  icon: './assets/icon.png',
   userInterfaceStyle: 'dark',
   backgroundColor: '#0b0f14',
   ios: {
@@ -63,6 +64,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ...config.android,
     package: 'gg.astraradar.app',
     adaptiveIcon: {
+      /**
+       * `foregroundImage` is required, not optional. An adaptiveIcon block carrying only a
+       * background colour fails the Android build outright at icon generation — and does so
+       * only on Android, which is why the iOS build of the same commit succeeded.
+       */
+      foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#0b0f14',
     },
   },
