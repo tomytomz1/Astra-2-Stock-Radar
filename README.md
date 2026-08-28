@@ -104,7 +104,7 @@ longer one.
 | 1 | Install dependencies (from the repo root) | `pnpm install` | ~1 min |
 | 1a | Install the EAS CLI | `npm install -g eas-cli` | ~1 min |
 | 1b | Link the Expo project — **run from `app/`** | `cd app`, `eas login`, `eas init` (the id is already committed; see below) | ~2 min |
-| 2 | Start the app build — **from `app/`** — then move straight to step 3 while it queues | `eas build --profile preview --platform all` | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
+| 2 | Start the app build, then move straight to step 3 while it queues | `pnpm build:ios` (or `pnpm build:android`) | 10–20 min (remote build queue — runs in the background, does not block your terminal) |
 | 3 | Provision Cloudflare and deploy the Worker — do this while step 2 builds | `pnpm bootstrap` | ~2–5 min |
 | 4 | Add secrets (optional, see below) | none strictly required | — |
 | 5 | Install on your devices | open the install link EAS printed on each device | immediate — no review, no TestFlight processing |
@@ -147,6 +147,16 @@ wrong directory.
 `npx eas` does not work: the npm package is `eas-cli` while the binary is `eas`, so npx cannot
 resolve it. Install it once instead.
 
+**Builds are wrapped so the directory cannot be got wrong**: `pnpm build:ios` and
+`pnpm build:android` run from anywhere in the repo, because `pnpm --filter @astra/app` sets the
+working directory for you — the same trick `pnpm deploy:worker` uses. Prefer them over typing
+`eas build` by hand. The rule above still applies to `eas login`, `eas init` and anything else not
+wrapped by a script.
+
+If an `eas` command ever *does* run from the root, it leaves `app.json` and/or `eas.json` behind
+there. Delete them: they are what makes the *next* run silently target the root instead of failing
+fast. `pnpm preflight` checks for exactly this.
+
 ```
 npm install -g eas-cli
 cd app
@@ -182,7 +192,7 @@ The id is required twice over: `getExpoPushTokenAsync` cannot mint a push token 
 
 ```
 npx eas login
-eas build --profile preview --platform all
+pnpm build:ios     # or: pnpm build:android
 ```
 
 `preview` is the profile you want (see Build profiles above). It produces an installable Android
@@ -416,7 +426,7 @@ email fallback while devices are still registering) — see "Deliberately not bu
 | `GET /status` shows `consecutiveFailures > 0` | The detector is broken, most likely because the store changed its markup. Run `pnpm probe` to see which adapter(s) fail and why — see the next row. If you can't fix the adapter/pattern yourself, `.claude/agents/watcher.md` defines an agent scoped to `worker/**` (detection adapters, KV state, dispatch) — ask it to fix the detector. |
 | Want to speed up detection, or diagnose why every adapter is failing | Run `pnpm probe`. It is **not** a required setup step — the Worker already tries the full adapter chain on every pass and uses the first one that succeeds, so a default deploy self-resolves detection with no configuration. What `pnpm probe` gets you: it fetches `PRODUCT_URL`, runs all four detection adapters, prints a per-adapter OK/FAILED report with parsed variants, and writes `worker/src/detect/config.json` pinning the winning adapter as `preferredAdapter` — saving the Worker up to three wasted fetches per cron pass, and giving you live variant ids for `pnpm simulate-restock`. If it reports every adapter failing, open `worker/src/detect/config.json` and hand-tune `soldOutPatterns` / `inStockPatterns` using the "candidate stock-related phrases" the probe prints, then re-run it until one adapter reports OK — a Worker deployed with every adapter broken will never detect a restock. `pnpm probe <url>` overrides the target (e.g. to test against a different store). |
 | Probe hits a Cloudflare/bot-challenge page | `pnpm probe` prints a specific warning when the response body looks like a challenge page (`cf-chl`, "checking your browser", captcha, etc). A plain server fetch can't pass a JS challenge — open the URL in a real browser and check whether it's only shown to new/unusual IPs. If every visitor gets it, none of the four adapters (nor the Worker built on them) can watch this store as-is. |
-| iOS app stops opening after months | An ad-hoc build stops launching when its provisioning profile expires (about a year). Re-run `eas build --profile preview --platform ios` and install the new link. A `production`/TestFlight build instead expires ~90 days after upload. |
+| iOS app stops opening after months | An ad-hoc build stops launching when its provisioning profile expires (about a year). Re-run `pnpm build:ios` and install the new link. A `production`/TestFlight build instead expires ~90 days after upload. |
 | Push never lands / Expo reports `DeviceNotRegistered` | The Worker already prunes dead tokens from its registry on `DeviceNotRegistered` receipts — if yours got pruned, just re-open the app so it re-registers a fresh token (uninstall/reinstall or a token refresh both trigger this). |
 | Testing on a simulator/emulator and nothing arrives | Expected — push tokens do not work on iOS Simulator or most Android emulator images. Use a real device for steps 6–7. |
 | `pnpm bootstrap` fails at the wrangler-auth check | You're not logged in (or the network can't reach Cloudflare) — the printed message tells you which command to run (`npx wrangler login`) and to re-run `pnpm bootstrap` after. It never attempts to log you in itself. |
